@@ -123,6 +123,11 @@
                    background: rgba(0,0,0,.65); color: #fff; padding: 3px 5px;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .opcion.eligiendo { border-color: var(--acento); opacity: .6; }
+  /* en la galería el sello lleva título y datos, así que necesita dos líneas */
+  .opcion .sello.galeria { white-space: normal; line-height: 1.3; padding: 5px 6px; }
+  .opcion .sello.galeria b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                             overflow: hidden; font-weight: 600; }
+  .opcion .sello.galeria span { color: #b9b9c6; }
 
   .fecha { font-size: 12px; color: var(--tenue); }
   .caja { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 12px; padding: 12px; }
@@ -144,6 +149,7 @@
 <header>
   <button class="icono-btn" id="btn-atras" style="display:none">‹</button>
   <h1 id="titulo-pantalla">Noticias</h1>
+  <button class="icono-btn" id="btn-galeria" title="Vídeos ya creados">🎬</button>
   <button class="icono-btn" id="btn-nueva" title="Escribir una noticia a mano">+</button>
   <button class="icono-btn" id="btn-refrescar">↻</button>
 </header>
@@ -168,6 +174,12 @@
       </select>
     </div>
     <div id="lista"></div>
+  </section>
+
+  <!-- 7. Galería de vídeos ya montados -->
+  <section class="pantalla" id="pantalla-galeria">
+    <p class="ayuda" style="margin-top:0" id="galeria-resumen"></p>
+    <div id="galeria" class="rejilla"></div>
   </section>
 
   <!-- 6. Noticia escrita a mano -->
@@ -286,6 +298,7 @@ function pantalla(nombre, titulo, atras) {
   $("#btn-atras").style.display = atras ? "block" : "none";
   $("#btn-refrescar").style.display = nombre === "lista" ? "block" : "none";
   $("#btn-nueva").style.display = nombre === "lista" ? "block" : "none";
+  $("#btn-galeria").style.display = nombre === "lista" ? "block" : "none";
   window.scrollTo(0, 0);
 }
 
@@ -372,6 +385,7 @@ function fechaBonita(iso) {
 
 async function abrirNoticia(id) {
   actual = noticias.find(n => n.id === id);
+  origenVideo = "lista";
   pantalla("editor", "Guion", true);
   $("#editor-titulo").textContent = actual.titulo;
   ["#f-hook", "#f-cuerpo", "#f-cierre", "#f-hashtags", "#f-broll"].forEach(s => $(s).value = "");
@@ -411,6 +425,46 @@ function rellenarEditor(datos) {
   pintarMusica("musica-editor");
   $("#btn-generar").disabled = false;
   $("#btn-generar").textContent = actual.tiene_video ? "Rehacer el vídeo desde cero" : "Generar vídeo";
+}
+
+// --- Galería: todos los vídeos montados, para resubirlos o guardarlos ---
+let origenVideo = "lista";  // de dónde se llegó a la pantalla del vídeo
+
+async function abrirGaleria() {
+  pantalla("galeria", "Vídeos creados", true);
+  $("#galeria-resumen").textContent = "";
+  $("#galeria").innerHTML = '<div class="cargando"><div class="spinner"></div>Buscando vídeos...</div>';
+  let d;
+  try {
+    d = await (await fetch("/api/galeria")).json();
+  } catch (e) {
+    $("#galeria").innerHTML = '<div class="aviso">No se pudo leer la galería.</div>';
+    return;
+  }
+  if (!d.videos.length) {
+    $("#galeria").innerHTML = '<div class="cargando">Todavía no has montado ningún vídeo.</div>';
+    return;
+  }
+  $("#galeria-resumen").textContent =
+    `${d.videos.length} vídeos · ${(d.espacio / 1073741824).toFixed(2)} GB en el PC`;
+  $("#galeria").innerHTML = d.videos.map((v, i) => `
+    <div class="opcion" data-i="${i}">
+      ${v.miniatura ? `<img src="${v.miniatura}" alt="" loading="lazy">` : '<img alt="">'}
+      <div class="sello galeria"><b>${escapar(v.titulo)}</b>
+        <span>${v.duracion ? Math.round(v.duracion) + "s · " : ""}${fechaBonita(v.fecha)}</span></div>
+    </div>`).join("");
+  $("#galeria").querySelectorAll(".opcion").forEach(el => {
+    el.onclick = () => abrirDeGaleria(d.videos[+el.dataset.i]);
+  });
+}
+
+// Abre un vídeo de la galería aunque su noticia ya no exista
+function abrirDeGaleria(v) {
+  actual = { ...(noticias.find(n => n.id === v.id) || {}), id: v.id, titulo: v.titulo };
+  musicaElegida = tituloMusica = null;
+  creditoMusica = v.credito_musica;
+  origenVideo = "galeria";
+  verVideoExistente();
 }
 
 // --- Noticia escrita a mano: para contar algo que no está en los feeds ---
@@ -874,6 +928,7 @@ async function aplicarMusica() {
 
 $("#btn-buscar").onclick = buscarOpciones;
 $("#f-buscar").addEventListener("keydown", e => { if (e.key === "Enter") buscarOpciones(); });
+$("#btn-galeria").onclick = abrirGaleria;
 $("#btn-nueva").onclick = () => abrirManual();
 $("#btn-escribir-guion").onclick = escribirGuionManual;
 $("#btn-editar-manual").onclick = () => abrirManual(actual.id);
@@ -922,6 +977,8 @@ $("#btn-atras").onclick = () => {
     if (manualEditando) abrirNoticia(manualEditando);
     else pantalla("lista", "Noticias", false);
   }
+  // y si el vídeo lo abriste desde la galería, atrás vuelve a la galería
+  else if (pantallaActual === "video" && origenVideo === "galeria") abrirGaleria();
   else pantalla("lista", "Noticias", false);
 };
 $("#btn-otra").onclick = () => { cargarNoticias(); pantalla("lista", "Noticias", false); };

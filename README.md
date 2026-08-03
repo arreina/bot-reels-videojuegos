@@ -20,7 +20,7 @@ Dos criterios de diseño que atraviesan todo el proyecto:
 | --- | --- | --- |
 | 1 | `files/noticias_reel.py` | Lee 10 feeds RSS (español, inglés y japonés), quita duplicados, traduce los titulares japoneses y escribe el guion en `guiones/<id>.json`. También se puede escribir una noticia a mano desde el móvil (botón **+**), que se guarda en `noticias_manuales.json` y aparece en el listado como una más. |
 | 2 | `files/guion_a_video.py` | Locuta el guion con Piper, busca B-roll acorde a la noticia, busca música en bancos libres, la mezcla con ducking, quema subtítulos y monta el mp4 con FFmpeg. |
-| 4 | `files/servidor.py` + `files/web/index.html` | Interfaz móvil (FastAPI): listado de noticias, editor de guion, generación, buscador de clips, buscador de música y volumen, y compartir nativo a Instagram/WhatsApp/Telegram. |
+| 4 | `files/servidor.py` + `files/web/index.html` | Interfaz móvil (FastAPI): listado de noticias con filtros, editor de guion, generación, buscador de clips, buscador de música y volumen, galería de vídeos ya montados y compartir nativo a Instagram/WhatsApp/Telegram. |
 | 3 | *pendiente* | Publicación en YouTube Shorts / TikTok con las APIs oficiales, con aprobación manual antes de cada subida e inserción automática de la atribución de la música. |
 
 Los guiones se generan **sin pagar API**: si no defines `ANTHROPIC_API_KEY`, el

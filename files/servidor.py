@@ -615,6 +615,59 @@ def elegir_clip(base_id: str, indice: int, eleccion: Eleccion):
     return listar_clips(base_id)
 
 
+_duraciones: dict[tuple[str, int], float] = {}
+
+
+def _duracion_cacheada(ruta: Path) -> float | None:
+    """ffprobe es un proceso nuevo cada vez; con la galería entera se nota."""
+    clave = (str(ruta), int(ruta.stat().st_mtime))
+    if clave not in _duraciones:
+        try:
+            _duraciones[clave] = round(gv.duracion_audio(ruta), 1)
+        except (ValueError, OSError):
+            _duraciones[clave] = None
+    return _duraciones[clave]
+
+
+@app.get("/api/galeria")
+def galeria():
+    """Todos los vídeos montados, incluso los de noticias que ya no están."""
+    if not gv.SALIDA_DIR.is_dir():
+        return {"videos": [], "espacio": 0}
+
+    titulos = {}
+    if nr.GUIONES_DIR.is_dir():
+        for guion in nr.GUIONES_DIR.glob("*.json"):
+            try:
+                titulos[guion.stem] = json.loads(guion.read_text(encoding="utf-8")).get("titulo", "")
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    creditos = _creditos_musica()
+    videos, espacio = [], 0
+    for ruta in gv.SALIDA_DIR.glob("*.mp4"):
+        datos = ruta.stat()
+        espacio += datos.st_size
+        base_id = ruta.stem
+        plan = _cargar_plan(base_id)
+        pista = Path(plan["musica"]).name if plan.get("musica") else None
+        mini = gv.generar_miniatura(ruta)
+        videos.append({
+            "id": base_id,
+            "titulo": titulos.get(base_id) or ruta.name,
+            "video": f"/videos/{ruta.name}?v={int(datos.st_mtime)}",
+            "miniatura": f"/miniaturas/{mini.name}" if mini else None,
+            "fecha": datetime.fromtimestamp(datos.st_mtime, timezone.utc).isoformat(),
+            "duracion": _duracion_cacheada(ruta),
+            "tamano": datos.st_size,
+            "editable": (gv.TMP_DIR / f"{base_id}.wav").is_file() and bool(plan),
+            # el crédito hay que ponerlo en la descripción al resubirlo
+            "credito_musica": creditos.get(pista, {}).get("texto"),
+        })
+    videos.sort(key=lambda v: v["fecha"], reverse=True)
+    return {"videos": videos, "espacio": espacio}
+
+
 @app.get("/api/reel/{base_id}")
 def reel_existente(base_id: str):
     """Datos del vídeo ya montado de una noticia, para no tener que rehacerlo."""
