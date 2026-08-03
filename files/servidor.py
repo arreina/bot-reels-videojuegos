@@ -234,44 +234,94 @@ def _repartir_por_termino(candidatos: list[dict]) -> list[dict]:
     return mezclados
 
 
+MUSICA_EXTENSIONES = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+
+
 def _pistas_musica() -> list[Path]:
-    if not gv.MUSICA_DIR.is_dir():
-        return []
-    return sorted(p for p in gv.MUSICA_DIR.iterdir()
-                  if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".ogg", ".flac"})
+    """Todo lo que hay a mano: pistas propias y lo ya bajado del banco libre."""
+    pistas = []
+    for carpeta in (gv.MUSICA_DIR, gv.MUSICA_CACHE):
+        if carpeta.is_dir():
+            pistas += sorted(p for p in carpeta.iterdir()
+                             if p.suffix.lower() in MUSICA_EXTENSIONES)
+    return pistas
+
+
+def _ruta_musica(nombre: str) -> Path | None:
+    """Busca una pista por nombre de archivo en las dos carpetas."""
+    nombre = Path(nombre).name
+    for carpeta in (gv.MUSICA_DIR, gv.MUSICA_CACHE):
+        ruta = carpeta / nombre
+        if ruta.is_file():
+            return ruta
+    return None
 
 
 def _elegir_musica(nombre: str | None = None) -> Path | None:
-    """La pista pedida por su nombre, o una al azar si no se especifica."""
-    pistas = _pistas_musica()
-    if not pistas:
-        return None
+    """La pista pedida por su nombre; si no se dice cuál, una nueva del banco."""
     if nombre:
-        elegida = next((p for p in pistas if p.name == nombre), None)
+        elegida = _ruta_musica(nombre)
         if elegida:
             return elegida
-    return random.choice(pistas)
+    del_banco = gv.musica_del_banco()
+    if del_banco:
+        return del_banco
+    # sin red o sin resultados, se tira de lo que ya haya descargado
+    pistas = _pistas_musica()
+    return random.choice(pistas) if pistas else None
 
 
 def _creditos_musica() -> dict:
     """Atribución exigida por la licencia de cada pista, si está registrada."""
-    ruta = gv.MUSICA_DIR / "creditos.json"
-    return json.loads(ruta.read_text(encoding="utf-8")) if ruta.is_file() else {}
+    creditos = {}
+    for ruta in (gv.MUSICA_DIR / "creditos.json", gv.MUSICA_CACHE / "creditos.json"):
+        if ruta.is_file():
+            creditos.update(json.loads(ruta.read_text(encoding="utf-8")))
+    return creditos
 
 
 @app.get("/api/musica")
 def listar_musica():
-    """Pistas disponibles en musica/, para el selector del móvil."""
+    """Pistas ya descargadas, para el selector del móvil."""
     creditos = _creditos_musica()
     return [{"nombre": p.name, "url": f"/musica/{p.name}",
+             "titulo": creditos.get(p.name, {}).get("titulo") or p.stem.replace("pista_", ""),
              "credito": creditos.get(p.name, {}).get("texto")}
             for p in _pistas_musica()]
 
 
+@app.get("/api/buscar_musica")
+def buscar_musica(q: str):
+    """Busca canciones en los bancos libres. No descarga: solo enseña opciones."""
+    if not q.strip():
+        raise HTTPException(400, "Escribe algo que buscar")
+    opciones = gv.buscar_musica(q.strip())
+    if not opciones:
+        raise HTTPException(404, "Ninguna canción libre coincide con esa búsqueda")
+    return {"opciones": opciones}
+
+
+class EleccionMusica(BaseModel):
+    candidato: dict
+
+
+@app.post("/api/musica/descargar")
+def descargar_musica(eleccion: EleccionMusica):
+    """Baja la pista elegida del banco y devuelve su nombre ya utilizable."""
+    candidato = eleccion.candidato
+    if not candidato.get("enlace") or not candidato.get("id"):
+        raise HTTPException(400, "Candidato incompleto")
+    ruta = gv.descargar_pista(candidato)
+    if not ruta:
+        raise HTTPException(502, "No se pudo descargar esa canción")
+    return {"nombre": ruta.name,
+            "credito": _creditos_musica().get(ruta.name, {}).get("texto")}
+
+
 @app.get("/musica/{nombre}")
 def servir_musica(nombre: str):
-    ruta = gv.MUSICA_DIR / Path(nombre).name
-    if not ruta.is_file():
+    ruta = _ruta_musica(nombre)
+    if not ruta:
         raise HTTPException(404, "Pista no encontrada")
     return FileResponse(ruta)
 
@@ -392,13 +442,15 @@ def listar_clips(base_id: str):
         })
     disponibles = len(por_id) - len(plan.get("usados", []))
     nombre_musica = Path(plan["musica"]).name if plan.get("musica") else None
+    credito = _creditos_musica().get(nombre_musica, {})
     return {
         "clips": clips,
         "alternativas": max(disponibles, 0),
         "musica": nombre_musica,
+        "titulo_musica": credito.get("titulo"),
         "volumen_musica": plan.get("volumen_musica", gv.MUSICA_VOLUMEN),
         # texto que habrá que poner en la descripción al publicar
-        "credito_musica": _creditos_musica().get(nombre_musica, {}).get("texto"),
+        "credito_musica": credito.get("texto"),
     }
 
 

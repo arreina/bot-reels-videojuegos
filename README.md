@@ -19,8 +19,8 @@ Dos criterios de diseño que atraviesan todo el proyecto:
 | Módulo | Fichero | Qué hace |
 | --- | --- | --- |
 | 1 | `files/noticias_reel.py` | Lee 10 feeds RSS (español, inglés y japonés), quita duplicados, traduce los titulares japoneses y escribe el guion en `guiones/<id>.json`. |
-| 2 | `files/guion_a_video.py` | Locuta el guion con Piper, busca B-roll acorde a la noticia, mezcla música con ducking, quema subtítulos y monta el mp4 con FFmpeg. |
-| 4 | `files/servidor.py` + `files/web/index.html` | Interfaz móvil (FastAPI): listado de noticias, editor de guion, generación, selector de clips, selector de música y volumen, y compartir nativo a Instagram/WhatsApp/Telegram. |
+| 2 | `files/guion_a_video.py` | Locuta el guion con Piper, busca B-roll acorde a la noticia, busca música en bancos libres, la mezcla con ducking, quema subtítulos y monta el mp4 con FFmpeg. |
+| 4 | `files/servidor.py` + `files/web/index.html` | Interfaz móvil (FastAPI): listado de noticias, editor de guion, generación, buscador de clips, buscador de música y volumen, y compartir nativo a Instagram/WhatsApp/Telegram. |
 | 3 | *pendiente* | Publicación en YouTube Shorts / TikTok con las APIs oficiales, con aprobación manual antes de cada subida e inserción automática de la atribución de la música. |
 
 Los guiones se generan **sin pagar API**: si no defines `ANTHROPIC_API_KEY`, el
@@ -49,12 +49,28 @@ BASE=https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/es/es_ES/sharvar
 curl -sSL -o voces/es_ES-sharvard-medium.onnx      "$BASE/es_ES-sharvard-medium.onnx"
 curl -sSL -o voces/es_ES-sharvard-medium.onnx.json "$BASE/es_ES-sharvard-medium.onnx.json"
 
-# 4. Música de fondo (CC BY, ~117 MB)
-./descargar_musica.sh
-
-# 5. Claves de los bancos de vídeo
+# 4. Claves de los bancos de vídeo
 cp files/.env.ejemplo files/.env   # y rellena PEXELS_API_KEY / PIXABAY_API_KEY
+
+# 5. (Opcional) Música en local. No hace falta: el bot la busca en bancos
+#    libres y la cachea en files/musica_cache/ sobre la marcha.
+./descargar_musica.sh
 ```
+
+### De dónde sale la música
+
+El selector busca en dos bancos, ninguno pide clave de API:
+
+- **Incompetech** (Kevin MacLeod): 1.442 piezas, todas CC BY 4.0. Publica su
+  catálogo entero en un JSON, así que la búsqueda es local e instantánea y se
+  puede filtrar por ambiente, instrumentos o descripción.
+- **Openverse**: buscador Creative Commons de la fundación WordPress, que indexa
+  el catálogo de Jamendo, Wikimedia y Freesound.
+
+Solo se ofrecen licencias **CC BY, CC0 y dominio público**. Quedan fuera a
+propósito las **NC** (prohíben monetizar), las **ND** (prohíben modificar la
+obra, y aquí se recorta y se mezcla con la voz) y las **SA** (obligarían a
+publicar el reel entero con la misma licencia libre).
 
 ## Uso
 
@@ -76,7 +92,8 @@ Por línea de órdenes:
 ```bash
 cd files
 ../.venv/bin/python3 noticias_reel.py --max 5            # --dry-run para solo listar
-../.venv/bin/python3 guion_a_video.py guiones/<id>.json  # --voz --musica --sin-musica --broll-dir --sin-broll
+../.venv/bin/python3 guion_a_video.py guiones/<id>.json        # música al azar del banco
+../.venv/bin/python3 guion_a_video.py guiones/<id>.json --musica "epic"   # o un archivo concreto
 ```
 
 ## Detalles que cuesta redescubrir
@@ -95,6 +112,12 @@ cd files
 - **`alimiter` necesita `level=0`** o re-normaliza la mezcla a 0 dB.
 - **El servidor debe correr con `cwd=files/`** porque los dos módulos usan rutas
   relativas. `arrancar_movil.sh` ya hace el `cd`.
+- **Openverse tira un 401 con `page_size` mayor que 20** si no llevas clave de
+  API. No es un fallo de credenciales aunque lo parezca: es su tope para
+  peticiones anónimas. Por eso la búsqueda pagina de 20 en 20.
+- **Las búsquedas de música exigen que aparezcan todas las palabras**, en las
+  dos fuentes. "upbeat electronic" devuelve cero. Si una búsqueda de varias
+  palabras se queda corta, `buscar_musica()` reintenta palabra por palabra.
 - **Sharvard se come la L de los grupos consonánticos** ("público" → "púbico"):
   `files/pronunciaciones.json` reescribe esas palabras ("pú-blico") solo para el
   TTS, nunca para los subtítulos.
@@ -102,6 +125,8 @@ cd files
 ## Licencias
 
 El código es tuyo; el material que descarga, no. Los clips de Pexels y Pixabay
-permiten uso comercial sin atribución, pero **la música de Kevin MacLeod es CC BY
-4.0 y la atribución es obligatoria**: el texto exacto de cada pista está en
-`files/musica/creditos.json` y debe acabar en la descripción del vídeo publicado.
+permiten uso comercial sin atribución, pero **casi toda la música es CC BY y la
+atribución es obligatoria**: al descargar una pista se guarda su crédito exacto
+en `files/musica_cache/creditos.json` (o `files/musica/creditos.json` para las
+locales), la interfaz lo enseña bajo el selector y debe acabar en la descripción
+del vídeo publicado. El Módulo 3 lo insertará automáticamente al subirlo.

@@ -30,7 +30,9 @@ import re
 import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -75,7 +77,8 @@ VOZ_MODELO_DEFECTO = str(RAIZ_PROYECTO / "voces/es_ES-sharvard-medium.onnx")
 SALIDA_DIR = Path("videos")
 TMP_DIR = Path("tmp_video")
 BROLL_CACHE = Path("broll_cache")
-MUSICA_DIR = Path("musica")
+MUSICA_DIR = Path("musica")        # pistas propias, si las hay
+MUSICA_CACHE = Path("musica_cache")  # lo descargado del banco libre
 PRONUNCIACIONES_PATH = Path("pronunciaciones.json")
 MUSICA_VOLUMEN = 0.20  # volumen base de la música bajo la voz (ajustable desde el móvil)
 
@@ -259,7 +262,6 @@ def ruta_de_clip(clip_id) -> Path:
 
 def descargar_candidato(candidato: dict) -> Path | None:
     """Descarga un clip del banco a la caché local (o lo reutiliza si ya está)."""
-    from urllib.parse import urlparse
     if urlparse(candidato["enlace"]).hostname not in DOMINIOS_PERMITIDOS:
         print(f"  [aviso] Enlace de origen no permitido: {candidato['enlace'][:60]}")
         return None
@@ -304,6 +306,283 @@ def descargar_broll_pexels(terminos: list[str], api_key: str, max_clips: int = 5
         if ruta:
             rutas.append(ruta)
     return rutas
+
+
+# --- Música: búsqueda en un banco libre en vez de una carpeta local ---------
+#
+# Se usa Openverse (api.openverse.org), el buscador de la fundación WordPress
+# que indexa el catálogo Creative Commons de Jamendo, Wikimedia y Freesound.
+# No necesita clave de API. Cada resultado trae ya su licencia y el texto de
+# atribución, que es lo que hace falta para poder publicar sin problemas.
+LICENCIAS_MUSICA = "by,cc0,pdm"
+# OJO con ampliar esa lista: "nc" prohíbe el uso comercial (adiós monetización),
+# "nd" prohíbe modificar la obra (y aquí se recorta y se mezcla con la voz) y
+# "sa" obligaría a publicar el reel entero bajo la misma licencia libre.
+
+DOMINIOS_MUSICA_PERMITIDOS = ("prod-1.storage.jamendo.com", "prod-2.storage.jamendo.com",
+                              "storage.jamendo.com", "upload.wikimedia.org",
+                              "incompetech.com", "www.incompetech.com")
+
+# Una pista más corta que el reel se repite en bucle y se nota; una de media
+# hora son 30 MB para usar 40 segundos.
+MUSICA_DURACION_MINIMA = 60      # segundos
+MUSICA_DURACION_MAXIMA = 12 * 60
+
+# Ambientes de respaldo cuando nadie ha elegido pista: da variedad sin que el
+# usuario tenga que buscar nada. De una palabra a propósito: las búsquedas de
+# varias exigen que aparezcan todas y casi siempre se quedan sin resultados.
+MUSICA_TERMINOS_DEFECTO = [
+    "upbeat", "energetic", "action", "epic", "driving", "electronic",
+    "synth", "aggressive", "grooving", "tech",
+]
+
+
+def _texto_atribucion(candidato: dict) -> str:
+    """Crédito en español, listo para pegar en la descripción del vídeo."""
+    licencia = candidato.get("licencia", "").upper()
+    version = candidato.get("licencia_version", "")
+    nombre = f"CC {licencia} {version}".strip() if licencia not in ("CC0", "PDM") else licencia
+    return (f'Música: "{candidato["titulo"]}" de {candidato["autor"]} '
+            f'({candidato.get("pagina", "")}), con licencia {nombre}.')
+
+
+def _pagina_openverse(termino: str, pagina: int) -> list[dict]:
+    """Una página de resultados. OJO: sin clave de API, page_size>20 da 401."""
+    for intento in range(2):
+        try:
+            r = requests.get(
+                "https://api.openverse.org/v1/audio/",
+                params={"q": termino, "license": LICENCIAS_MUSICA, "category": "music",
+                        "page_size": 20, "page": pagina},
+                headers={"User-Agent": "bot-reels/1.0"}, timeout=30,
+            )
+            r.raise_for_status()
+            return r.json().get("results", [])
+        except requests.RequestException as e:
+            if intento == 0:
+                time.sleep(1.5)
+                continue
+            print(f"  [aviso] Openverse falló para '{termino}': {e}")
+    return []
+
+
+def buscar_musica_openverse(termino: str, limite: int = 24) -> list[dict]:
+    """Busca pistas con licencia apta para monetizar, SIN descargarlas."""
+    candidatos, pagina = [], 1
+    while len(candidatos) < limite and pagina <= 3:
+        resultados = _pagina_openverse(termino, pagina)
+        if not resultados:
+            break
+        for pista in resultados:
+            segundos = (pista.get("duration") or 0) / 1000
+            if not pista.get("url"):
+                continue
+            if not MUSICA_DURACION_MINIMA <= segundos <= MUSICA_DURACION_MAXIMA:
+                continue
+            candidato = {
+                "id": pista["id"],
+                "titulo": pista.get("title") or "Sin título",
+                "autor": pista.get("creator") or "Desconocido",
+                "duracion": round(segundos),
+                "enlace": pista["url"],
+                "pagina": pista.get("foreign_landing_url", ""),
+                "licencia": pista.get("license", ""),
+                "licencia_version": pista.get("license_version", ""),
+                "generos": pista.get("genres") or [],
+                "termino": termino,
+                "fuente": pista.get("source", "openverse"),
+            }
+            candidato["credito"] = _texto_atribucion(candidato)
+            candidatos.append(candidato)
+        pagina += 1
+    return candidatos[:limite]
+
+
+# Segunda fuente: el catálogo completo de Kevin MacLeod (1.442 piezas, todas
+# CC BY 4.0). Publica un JSON con título, descripción, ambiente, instrumentos y
+# bpm, así que la búsqueda se hace en local: ni clave, ni límites, ni esperas.
+CATALOGO_INCOMPETECH = "https://incompetech.com/music/royalty-free/pieces.json"
+MP3_INCOMPETECH = "https://incompetech.com/music/royalty-free/mp3-royaltyfree/"
+CATALOGO_VIGENCIA = 7 * 24 * 3600  # se refresca una vez por semana
+
+# El catálogo está en inglés; esto evita que una búsqueda en español no dé nada.
+SINONIMOS_MUSICA = {
+    "epico": "epic", "épico": "epic", "accion": "action", "acción": "action",
+    "alegre": "upbeat", "animado": "upbeat", "energico": "energetic",
+    "enérgico": "energetic", "tenso": "tense", "tension": "tense",
+    "tensión": "tense", "misterio": "mystery", "misterioso": "mystery",
+    "terror": "horror", "miedo": "horror", "tranquilo": "calm",
+    "relajado": "relaxed", "triste": "sad", "electronica": "electronic",
+    "electrónica": "electronic", "futurista": "futuristic", "espacio": "space",
+    "espacial": "space", "combate": "battle", "batalla": "battle",
+    "carrera": "driving", "oscuro": "dark", "divertido": "humorous",
+    "gracioso": "humorous", "rapido": "fast", "rápido": "fast",
+    "videojuego": "video game", "videojuegos": "video game", "retro": "retro",
+}
+
+
+def _traducir_busqueda(termino: str) -> str:
+    return " ".join(SINONIMOS_MUSICA.get(p.lower(), p) for p in termino.split())
+
+
+def _segundos_hms(texto: str) -> int:
+    """'00:03:48' -> 228. Devuelve 0 si el formato no cuadra."""
+    try:
+        partes = [int(p) for p in texto.split(":")]
+    except (ValueError, AttributeError):
+        return 0
+    segundos = 0
+    for parte in partes:
+        segundos = segundos * 60 + parte
+    return segundos
+
+
+def _catalogo_incompetech() -> list[dict]:
+    """Catálogo completo, cacheado en disco una semana (pesa ~1 MB)."""
+    cache = MUSICA_CACHE / "catalogo_incompetech.json"
+    if cache.is_file() and time.time() - cache.stat().st_mtime < CATALOGO_VIGENCIA:
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    try:
+        r = requests.get(CATALOGO_INCOMPETECH, timeout=60,
+                         headers={"User-Agent": "bot-reels/1.0"})
+        r.raise_for_status()
+        piezas = r.json()
+    except (requests.RequestException, ValueError) as e:
+        print(f"  [aviso] No se pudo leer el catálogo de Incompetech: {e}")
+        if cache.is_file():  # mejor uno viejo que ninguno
+            return json.loads(cache.read_text(encoding="utf-8"))
+        return []
+    MUSICA_CACHE.mkdir(exist_ok=True)
+    cache.write_text(json.dumps(piezas, ensure_ascii=False), encoding="utf-8")
+    return piezas
+
+
+def buscar_musica_incompetech(termino: str, limite: int = 24) -> list[dict]:
+    """Busca en el catálogo de Kevin MacLeod por título, ambiente o descripción."""
+    palabras = _traducir_busqueda(termino).lower().split()
+    if not palabras:
+        return []
+    puntuadas = []
+    for pieza in _catalogo_incompetech():
+        # varios títulos del catálogo traen saltos de línea pegados; sin
+        # limpiarlos, la URL del mp3 sale rota
+        pieza = {k: (v.strip() if isinstance(v, str) else v) for k, v in pieza.items()}
+        titulo = (pieza.get("title") or "").lower()
+        resto = " ".join(str(pieza.get(c) or "") for c in
+                         ("feel", "description", "instruments")).lower()
+        # tienen que aparecer todas las palabras, en el título o en los datos
+        if not all(p in titulo or p in resto for p in palabras):
+            continue
+        segundos = _segundos_hms(pieza.get("length", ""))
+        if not MUSICA_DURACION_MINIMA <= segundos <= MUSICA_DURACION_MAXIMA:
+            continue
+        candidato = {
+            "id": f"km_{pieza.get('uuid')}",
+            "titulo": pieza.get("title") or "Sin título",
+            "autor": "Kevin MacLeod",
+            "duracion": segundos,
+            "enlace": MP3_INCOMPETECH + quote(pieza.get("filename", "")),
+            "pagina": "https://incompetech.com/music/royalty-free/",
+            "licencia": "by",
+            "licencia_version": "4.0",
+            "generos": [g.strip() for g in (pieza.get("feel") or "").split(",") if g.strip()],
+            "termino": termino,
+            "fuente": "incompetech",
+        }
+        candidato["credito"] = _texto_atribucion(candidato)
+        # las coincidencias en el título mandan sobre las de la descripción
+        puntuadas.append((sum(p in titulo for p in palabras), candidato))
+    puntuadas.sort(key=lambda par: par[0], reverse=True)
+    return [c for _, c in puntuadas[:limite]]
+
+
+def buscar_musica(termino: str, limite: int = 24) -> list[dict]:
+    """Busca en todas las fuentes de música libre y junta los resultados."""
+    def _buscar(texto: str) -> list[dict]:
+        return (buscar_musica_incompetech(texto, limite)
+                + buscar_musica_openverse(_traducir_busqueda(texto), limite))
+
+    candidatos = _buscar(termino)
+    palabras = termino.split()
+    # Las dos fuentes exigen que aparezcan TODAS las palabras, así que una
+    # búsqueda de varias suele quedarse en nada: mejor eso que devolver vacío.
+    if len(candidatos) < 5 and len(palabras) > 1:
+        vistos = {c["id"] for c in candidatos}
+        for palabra in palabras:
+            for candidato in _buscar(palabra):
+                if candidato["id"] not in vistos:
+                    vistos.add(candidato["id"])
+                    candidatos.append(candidato)
+    return candidatos[:limite * 2]
+
+
+def ruta_de_pista(pista_id: str) -> Path:
+    """Ruta en la caché de una pista descargada del banco."""
+    seguro = re.sub(r"[^\w.-]", "_", str(pista_id))[:60]
+    return MUSICA_CACHE / f"pista_{seguro}.mp3"
+
+
+def creditos_del_banco() -> dict:
+    ruta = MUSICA_CACHE / "creditos.json"
+    return json.loads(ruta.read_text(encoding="utf-8")) if ruta.is_file() else {}
+
+
+def _registrar_credito(archivo: str, candidato: dict) -> None:
+    """La atribución es obligatoria: se guarda junto a la pista, no en memoria."""
+    creditos = creditos_del_banco()
+    creditos[archivo] = {
+        "titulo": candidato["titulo"],
+        "autor": candidato["autor"],
+        "licencia": candidato.get("licencia", "").upper(),
+        "enlace": candidato.get("pagina", ""),
+        "texto": candidato.get("credito") or _texto_atribucion(candidato),
+    }
+    (MUSICA_CACHE / "creditos.json").write_text(
+        json.dumps(creditos, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def descargar_pista(candidato: dict) -> Path | None:
+    """Baja la pista elegida a musica_cache/ y registra su atribución."""
+    if urlparse(candidato["enlace"]).hostname not in DOMINIOS_MUSICA_PERMITIDOS:
+        print(f"  [aviso] Origen de música no permitido: {candidato['enlace'][:60]}")
+        return None
+    MUSICA_CACHE.mkdir(exist_ok=True)
+    ruta = ruta_de_pista(candidato["id"])
+    if not (ruta.exists() and ruta.stat().st_size > 0):
+        try:
+            with requests.get(candidato["enlace"], stream=True, timeout=120,
+                              headers={"User-Agent": "bot-reels/1.0"}) as descarga:
+                descarga.raise_for_status()
+                with open(ruta, "wb") as fh:
+                    for trozo in descarga.iter_content(chunk_size=1 << 20):
+                        fh.write(trozo)
+        except requests.RequestException as e:
+            print(f"  [aviso] No se pudo descargar la música: {e}")
+            ruta.unlink(missing_ok=True)
+            return None
+        try:
+            duracion_audio(ruta)  # si no es audio de verdad, ffprobe se queja
+        except (ValueError, OSError):
+            print("  [aviso] Lo descargado no es audio reproducible, se descarta")
+            ruta.unlink(missing_ok=True)
+            return None
+    _registrar_credito(ruta.name, candidato)
+    return ruta
+
+
+def musica_del_banco(termino: str | None = None) -> Path | None:
+    """Elige y descarga una pista del banco (ambiente al azar si no se dice cuál)."""
+    termino = termino or random.choice(MUSICA_TERMINOS_DEFECTO)
+    candidatos = buscar_musica(termino)
+    random.shuffle(candidatos)
+    for candidato in candidatos[:5]:
+        ruta = descargar_pista(candidato)
+        if ruta:
+            return ruta
+    return None
 
 
 def preparar_clips(rutas: list[Path]) -> list[tuple[str, float]]:
@@ -483,7 +762,10 @@ def main():
     parser.add_argument("--broll-dir", help="Carpeta con clips propios para el fondo (en vez de Pexels)")
     parser.add_argument("--sin-broll", action="store_true",
                         help="Fuerza el fondo de gradiente procedural")
-    parser.add_argument("--musica", help="Pista de música concreta (por defecto: aleatoria de musica/)")
+    parser.add_argument("--musica", help="Archivo de música concreto, o términos a buscar "
+                                         "en el banco libre (por defecto: ambiente al azar)")
+    parser.add_argument("--musica-local", action="store_true",
+                        help="No busca en el banco: usa una pista al azar de musica/")
     parser.add_argument("--sin-musica", action="store_true", help="Sin música de fondo")
     args = parser.parse_args()
 
@@ -531,9 +813,13 @@ def main():
 
     musica = None
     if not args.sin_musica:
-        if args.musica:
+        if args.musica and Path(args.musica).is_file():
             musica = Path(args.musica)
-        elif MUSICA_DIR.is_dir():
+        elif not args.musica_local:
+            termino = args.musica  # si no es un archivo, se toma como búsqueda
+            print(f"  Buscando música en el banco libre: {termino or 'ambiente al azar'}")
+            musica = musica_del_banco(termino)
+        if musica is None and MUSICA_DIR.is_dir():
             pistas = sorted(
                 p for p in MUSICA_DIR.iterdir()
                 if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
@@ -542,8 +828,11 @@ def main():
                 musica = random.choice(pistas)
         if musica:
             print(f"  Música de fondo: {musica.name}")
+            credito = creditos_del_banco().get(musica.name, {}).get("texto")
+            if credito:
+                print(f"  Atribución obligatoria al publicar: {credito}")
         else:
-            print("  [aviso] Sin pistas en musica/: el reel irá sin música de fondo.")
+            print("  [aviso] Sin música: ni el banco ni musica/ dieron ninguna pista.")
 
     print(f"[4/4] Montando vídeo final con FFmpeg ({'B-roll' if clips else 'gradiente'})...")
     montar_video(audio_wav, srt_path, salida_mp4, dur, clips=clips, musica=musica)

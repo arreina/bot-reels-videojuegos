@@ -126,7 +126,8 @@
   .cancion { display: flex; align-items: center; gap: 12px; background: var(--tarjeta);
              border: 1px solid var(--borde); border-radius: 12px; padding: 12px; margin-bottom: 8px; }
   .cancion.activa { border-color: var(--acento); }
-  .cancion .nombre { flex: 1; font-size: 14px; }
+  .cancion .nombre { flex: 1; font-size: 14px; min-width: 0; }
+  .cancion .detalle { display: block; color: var(--tenue); font-size: 12px; margin-top: 3px; }
   .titulo-noticia { font-size: 14px; color: var(--tenue); margin: 0 0 4px; }
 </style>
 </head>
@@ -168,7 +169,13 @@
 
   <!-- 5. Selector de canciones -->
   <section class="pantalla" id="pantalla-musica">
-    <p class="ayuda" style="margin-top:0">Toca ▶ para escuchar, o el nombre para elegirla.</p>
+    <label for="f-musica">Buscar canción</label>
+    <div style="display:flex;gap:8px">
+      <input type="text" id="f-musica" placeholder="ej. épico, retro, acción" style="flex:1">
+      <button class="icono-btn" id="btn-buscar-musica">Buscar</button>
+    </div>
+    <p class="ayuda">Bancos de música libre. Solo aparecen canciones que permiten
+      monetizar; la atribución se guarda sola. Toca ▶ para escuchar y el nombre para elegirla.</p>
     <div id="canciones"></div>
   </section>
 
@@ -369,6 +376,7 @@ async function cargarClips() {
     if (!r.ok) { $("#clips").innerHTML = ""; return; }
     const d = await r.json();
     musicaElegida = d.musica;
+    tituloMusica = d.titulo_musica;
     volumenMusica = d.volumen_musica;
     creditoMusica = d.credito_musica;
     pintarMusica("musica-resultado");
@@ -447,7 +455,8 @@ async function elegirOpcion(candidato, el) {
 }
 
 // --- Música de fondo: pista y volumen, tanto antes como después de generar ---
-let musicaElegida = null, volumenMusica = 0.20, creditoMusica = null, contenedorMusica = "musica-editor";
+let musicaElegida = null, tituloMusica = null, volumenMusica = 0.20,
+    creditoMusica = null, contenedorMusica = "musica-editor";
 
 // Ojo: hay dos bloques de música a la vez (editor y resultado). Nada de id=,
 // o querySelector devolvería siempre el del editor y el otro quedaría muerto.
@@ -455,7 +464,9 @@ function pintarMusica(destino) {
   contenedorMusica = destino;
   const pct = Math.round(volumenMusica * 100);
   const caja = $("#" + destino);
-  const nombre = musicaElegida ? musicaElegida.replace(/\.[^.]+$/, "") : "Aleatoria en cada vídeo";
+  const nombre = musicaElegida
+    ? (tituloMusica || musicaElegida.replace(/\.[^.]+$/, ""))
+    : "La elige el bot en cada vídeo";
   caja.innerHTML = `
     <div class="caja">
       <div class="fila">
@@ -477,26 +488,89 @@ function pintarMusica(destino) {
   };
 }
 
-async function abrirMusica() {
-  pantalla("musica", "Música", true);
-  $("#canciones").innerHTML = '<div class="cargando"><div class="spinner"></div>Cargando...</div>';
-  const pistas = await (await fetch("/api/musica")).json();
-  const filas = [{ nombre: null, url: null }, ...pistas];
-  $("#canciones").innerHTML = filas.map((p, i) => `
-    <div class="cancion ${p.nombre === musicaElegida ? "activa" : ""}" data-i="${i}">
-      <div class="nombre">${p.nombre ? escapar(p.nombre.replace(/\.[^.]+$/, "")) : "🎲 Aleatoria en cada vídeo"}</div>
-      ${p.url ? `<button data-url="${p.url}">▶</button>` : ""}
+// Las canciones ya no salen de una carpeta fija: se buscan en bancos libres y
+// solo se descarga la que se elige. Cada fila sabe qué hacer al tocarla.
+let filasMusica = [];
+
+function pintarCanciones() {
+  $("#canciones").innerHTML = filasMusica.map((f, i) => `
+    <div class="cancion ${f.archivo && f.archivo === musicaElegida ? "activa" : ""}" data-i="${i}">
+      <div class="nombre">${escapar(f.titulo)}
+        ${f.detalle ? `<span class="detalle">${escapar(f.detalle)}</span>` : ""}</div>
+      ${f.audio ? "<button>▶</button>" : ""}
     </div>`).join("");
   $("#canciones").querySelectorAll(".cancion").forEach(el => {
-    const p = filas[+el.dataset.i];
-    el.querySelector(".nombre").onclick = () => {
-      musicaElegida = p.nombre;
-      creditoMusica = p.credito;
-      volverDeMusica();
-    };
+    const f = filasMusica[+el.dataset.i];
+    el.querySelector(".nombre").onclick = f.elegir;
     const play = el.querySelector("button");
-    if (play) play.onclick = e => { e.stopPropagation(); escuchar(play.dataset.url, play); };
+    if (play) play.onclick = e => { e.stopPropagation(); escuchar(f.audio, play); };
   });
+}
+
+function duracionBonita(segundos) {
+  const m = Math.floor(segundos / 60), s = String(segundos % 60).padStart(2, "0");
+  return `${m}:${s}`;
+}
+
+async function abrirMusica() {
+  pantalla("musica", "Música", true);
+  $("#f-musica").value = "";
+  $("#canciones").innerHTML = '<div class="cargando"><div class="spinner"></div>Cargando...</div>';
+  const pistas = await (await fetch("/api/musica")).json();
+  filasMusica = [
+    { titulo: "🎲 Que la elija el bot", detalle: "busca una nueva en el banco",
+      archivo: null, elegir: () => elegirPista(null, null, null) },
+    ...pistas.map(p => ({
+      titulo: p.titulo, detalle: "ya descargada", archivo: p.nombre, audio: p.url,
+      elegir: () => elegirPista(p.nombre, p.titulo, p.credito),
+    })),
+  ];
+  pintarCanciones();
+}
+
+async function buscarCanciones() {
+  const q = $("#f-musica").value.trim();
+  if (!q) return;
+  $("#canciones").innerHTML = '<div class="cargando"><div class="spinner"></div>Buscando...</div>';
+  try {
+    const r = await fetch("/api/buscar_musica?q=" + encodeURIComponent(q));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "No se pudo buscar");
+    filasMusica = d.opciones.map(c => ({
+      titulo: c.titulo,
+      detalle: `${c.autor} · ${duracionBonita(c.duracion)} · CC ${c.licencia.toUpperCase()} ${c.licencia_version}`,
+      // se escucha desde el banco: no se descarga nada hasta elegirla
+      audio: c.enlace,
+      elegir: () => usarCandidato(c),
+    }));
+    pintarCanciones();
+  } catch (e) {
+    $("#canciones").innerHTML = `<div class="aviso">${escapar(e.message)}</div>`;
+  }
+}
+
+async function usarCandidato(candidato) {
+  if (reproduciendo) { reproduciendo.audio.pause(); reproduciendo = null; }
+  $("#canciones").innerHTML =
+    '<div class="cargando"><div class="spinner"></div>Descargando la canción...</div>';
+  try {
+    const r = await fetch("/api/musica/descargar", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidato }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "No se pudo descargar");
+    elegirPista(d.nombre, candidato.titulo, d.credito);
+  } catch (e) {
+    $("#canciones").innerHTML = `<div class="aviso">${escapar(e.message)}</div>`;
+  }
+}
+
+function elegirPista(archivo, titulo, credito) {
+  musicaElegida = archivo;
+  tituloMusica = titulo;
+  creditoMusica = credito;
+  volverDeMusica();
 }
 
 let reproduciendo = null;
@@ -534,6 +608,8 @@ async function aplicarMusica() {
 
 $("#btn-buscar").onclick = buscarOpciones;
 $("#f-buscar").addEventListener("keydown", e => { if (e.key === "Enter") buscarOpciones(); });
+$("#btn-buscar-musica").onclick = buscarCanciones;
+$("#f-musica").addEventListener("keydown", e => { if (e.key === "Enter") buscarCanciones(); });
 
 $("#btn-remontar").onclick = async () => {
   pantalla("video", "Rehaciendo", true);

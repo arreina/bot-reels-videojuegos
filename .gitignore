@@ -9,8 +9,10 @@ voces/
 __pycache__/
 *.pyc
 
-# Música con licencia CC-BY: se descarga con ./descargar_musica.sh
+# Música: la carpeta local es opcional (./descargar_musica.sh) y musica_cache/
+# lo llena el buscador de bancos libres sobre la marcha
 files/musica/*.mp3
+files/musica_cache/
 
 # Material descargado o generado por el propio bot
 files/broll_cache/
