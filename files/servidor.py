@@ -171,13 +171,31 @@ class NoticiaManual(BaseModel):
     url: str = ""
 
 
+def _guion_de_manual(noticia: dict) -> dict:
+    """Escribe el guion de una noticia a mano y lo deja en guiones/<id>.json."""
+    try:
+        guion = nr.generar_guion_cli(noticia)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo generar el guion: {e}")
+    guardado = {**{k: noticia[k] for k in ("id", "fuente", "titulo", "url")},
+                "generado": datetime.now(timezone.utc).isoformat(), "guion": guion}
+    nr.GUIONES_DIR.mkdir(exist_ok=True)
+    (nr.GUIONES_DIR / f"{noticia['id']}.json").write_text(
+        json.dumps(guardado, ensure_ascii=False, indent=2), encoding="utf-8")
+    return guardado
+
+
+def _validar_titulo(titulo: str) -> str:
+    titulo = titulo.strip()
+    if len(titulo) < 10:
+        raise HTTPException(400, "Escribe un titular un poco más largo")
+    return titulo
+
+
 @app.post("/api/noticia_manual")
 def crear_noticia_manual(datos: NoticiaManual):
     """Da de alta una noticia escrita a mano y devuelve su guion."""
-    titulo = datos.titulo.strip()
-    if len(titulo) < 10:
-        raise HTTPException(400, "Escribe un titular un poco más largo")
-
+    titulo = _validar_titulo(datos.titulo)
     # el id sale del título y del momento: dos noticias a mano no chocan
     semilla = f"manual:{titulo}:{datetime.now(timezone.utc).isoformat()}"
     noticia = {
@@ -190,21 +208,59 @@ def crear_noticia_manual(datos: NoticiaManual):
         "idioma": "es",
         "manual": True,
     }
-    try:
-        guion = nr.generar_guion_cli(noticia)
-    except Exception as e:
-        raise HTTPException(502, f"No se pudo generar el guion: {e}")
-
+    guardado = _guion_de_manual(noticia)
     manuales = _cargar_manuales()
     manuales.insert(0, noticia)
     _guardar_manuales(manuales)
-
-    guardado = {**{k: noticia[k] for k in ("id", "fuente", "titulo", "url")},
-                "generado": datetime.now(timezone.utc).isoformat(), "guion": guion}
-    nr.GUIONES_DIR.mkdir(exist_ok=True)
-    (nr.GUIONES_DIR / f"{noticia['id']}.json").write_text(
-        json.dumps(guardado, ensure_ascii=False, indent=2), encoding="utf-8")
     return guardado
+
+
+@app.get("/api/noticia_manual/{noticia_id}")
+def leer_noticia_manual(noticia_id: str):
+    """El texto original tal y como se escribió, para poder retocarlo."""
+    noticia = next((n for n in _cargar_manuales() if n["id"] == noticia_id), None)
+    if noticia is None:
+        raise HTTPException(404, "Esa noticia a mano ya no existe")
+    return noticia
+
+
+@app.put("/api/noticia_manual/{noticia_id}")
+def editar_noticia_manual(noticia_id: str, datos: NoticiaManual):
+    """Cambia el texto de una noticia a mano y reescribe su guion."""
+    manuales = _cargar_manuales()
+    posicion = next((i for i, n in enumerate(manuales) if n["id"] == noticia_id), None)
+    if posicion is None:
+        raise HTTPException(404, "Esa noticia a mano ya no existe")
+
+    noticia = {**manuales[posicion],
+               "titulo": _validar_titulo(datos.titulo),
+               "resumen": datos.resumen.strip(),
+               "url": datos.url.strip(),
+               "editada": datetime.now(timezone.utc).isoformat()}
+    # se conserva el id: si ya había vídeo, sigue siendo el de esta noticia
+    guardado = _guion_de_manual(noticia)
+    manuales[posicion] = noticia
+    _guardar_manuales(manuales)
+    return guardado
+
+
+@app.delete("/api/noticia_manual/{noticia_id}")
+def borrar_noticia_manual(noticia_id: str):
+    """Quita la noticia y su guion. El mp4 ya montado NO se toca."""
+    manuales = _cargar_manuales()
+    quedan = [n for n in manuales if n["id"] != noticia_id]
+    if len(quedan) == len(manuales):
+        raise HTTPException(404, "Esa noticia a mano ya no existe")
+    _guardar_manuales(quedan)
+
+    base = Path(noticia_id).name
+    (nr.GUIONES_DIR / f"{base}.json").unlink(missing_ok=True)
+    for temporal in (f"{base}.wav", f"{base}.srt", f"{base}_clips.json"):
+        (gv.TMP_DIR / temporal).unlink(missing_ok=True)
+    # el vídeo se deja a propósito: puede que ya lo hayas publicado o guardado
+    video = gv.SALIDA_DIR / f"{base}.mp4"
+    return {"borrada": noticia_id,
+            "video_conservado": f"videos/{video.name}" if video.is_file() else None}
 
 
 @app.post("/api/guion/{noticia_id}")

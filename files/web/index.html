@@ -189,6 +189,10 @@
   <section class="pantalla" id="pantalla-editor">
     <p class="titulo-noticia" id="editor-titulo"></p>
     <button class="boton secundario" id="btn-ver-video" style="display:none">▶ Ver el vídeo que ya hiciste</button>
+    <div id="acciones-manual" style="display:none;gap:8px;margin-top:10px">
+      <button class="boton secundario" id="btn-editar-manual" style="flex:1;margin:0">✏️ Editar la noticia</button>
+      <button class="boton secundario" id="btn-borrar-manual" style="flex:1;margin:0">🗑 Eliminar</button>
+    </div>
     <label for="f-hook">Gancho</label>
     <textarea id="f-hook" rows="2"></textarea>
     <label for="f-cuerpo">Cuerpo</label>
@@ -373,6 +377,10 @@ async function abrirNoticia(id) {
   ["#f-hook", "#f-cuerpo", "#f-cierre", "#f-hashtags", "#f-broll"].forEach(s => $(s).value = "");
   // si ya hay vídeo hecho, se puede recuperar en vez de gastar otro montaje
   $("#btn-ver-video").style.display = actual.tiene_video ? "block" : "none";
+  // las noticias a mano son las únicas que se pueden retocar o borrar
+  $("#acciones-manual").style.display = actual.manual ? "flex" : "none";
+  confirmandoBorrado = false;
+  $("#btn-borrar-manual").textContent = "🗑 Eliminar";
   $("#btn-generar").disabled = true;
   $("#btn-generar").textContent = "Escribiendo el guion con Claude...";
   // Cada noticia arranca con su propia música: si no se limpia, se arrastra la
@@ -406,17 +414,34 @@ function rellenarEditor(datos) {
 }
 
 // --- Noticia escrita a mano: para contar algo que no está en los feeds ---
-function abrirManual() {
+let manualEditando = null;  // id si se está retocando una, null si es nueva
+
+async function abrirManual(id = null) {
+  manualEditando = id;
   ["#m-titulo", "#m-texto", "#m-url"].forEach(s => $(s).value = "");
   $("#error-manual").style.display = "none";
   $("#btn-escribir-guion").disabled = false;
-  $("#btn-escribir-guion").textContent = "Escribir el guion";
-  pantalla("manual", "Noticia a mano", true);
+  $("#btn-escribir-guion").textContent = id ? "Reescribir el guion" : "Escribir el guion";
+  pantalla("manual", id ? "Editar noticia" : "Noticia a mano", true);
+  if (!id) return;
+  try {  // se recupera el texto original, no el guion ya redactado
+    const r = await fetch("/api/noticia_manual/" + id);
+    if (!r.ok) throw new Error((await r.json()).detail);
+    const n = await r.json();
+    if (manualEditando !== id) return;
+    $("#m-titulo").value = n.titulo || "";
+    $("#m-texto").value = n.resumen || "";
+    $("#m-url").value = n.url || "";
+  } catch (e) {
+    $("#error-manual").textContent = e.message;
+    $("#error-manual").style.display = "block";
+  }
 }
 
 async function escribirGuionManual() {
   const titulo = $("#m-titulo").value.trim();
   const boton = $("#btn-escribir-guion");
+  const editando = manualEditando;
   $("#error-manual").style.display = "none";
   if (titulo.length < 10) {
     $("#error-manual").textContent = "Escribe un titular un poco más largo.";
@@ -426,30 +451,77 @@ async function escribirGuionManual() {
   boton.disabled = true;
   boton.textContent = "Escribiendo el guion con Claude...";
   try {
-    const r = await fetch("/api/noticia_manual", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch("/api/noticia_manual" + (editando ? "/" + editando : ""), {
+      method: editando ? "PUT" : "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ titulo, resumen: $("#m-texto").value.trim(), url: $("#m-url").value.trim() }),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || "No se pudo escribir el guion");
+    const anterior = noticias.find(n => n.id === d.id);
     // pasa a formar parte del listado, como una noticia más
     actual = {
+      ...(anterior || {}),
       id: d.id, titulo: d.titulo, fuente: d.fuente, url: d.url,
-      fecha: new Date().toISOString(), idioma: "es", resumen: "",
-      tiene_guion: true, tiene_video: false, manual: true,
+      fecha: anterior ? anterior.fecha : new Date().toISOString(),
+      idioma: "es", resumen: "", tiene_guion: true,
+      tiene_video: anterior ? anterior.tiene_video : false, manual: true,
     };
-    noticias.unshift(actual);
+    if (anterior) noticias[noticias.indexOf(anterior)] = actual;
+    else noticias.unshift(actual);
     musicaElegida = tituloMusica = creditoMusica = null;
     volumenMusica = 0.20;
+    if (actual.tiene_video) await recuperarMusicaDelVideo(actual.id);
     pantalla("editor", "Guion", true);
     $("#editor-titulo").textContent = actual.titulo;
-    $("#btn-ver-video").style.display = "none";
+    $("#btn-ver-video").style.display = actual.tiene_video ? "block" : "none";
+    $("#acciones-manual").style.display = "flex";
     rellenarEditor(d);
   } catch (e) {
     $("#error-manual").textContent = e.message;
     $("#error-manual").style.display = "block";
     boton.disabled = false;
-    boton.textContent = "Escribir el guion";
+    boton.textContent = editando ? "Reescribir el guion" : "Escribir el guion";
+  }
+}
+
+// Borrar pide confirmación en el propio botón: nada de diálogos del navegador
+let confirmandoBorrado = false;
+
+function pedirBorrado() {
+  const boton = $("#btn-borrar-manual");
+  if (!confirmandoBorrado) {
+    confirmandoBorrado = true;
+    boton.textContent = "¿Seguro? Toca otra vez";
+    setTimeout(() => {
+      if (!confirmandoBorrado) return;
+      confirmandoBorrado = false;
+      boton.textContent = "🗑 Eliminar";
+    }, 4000);
+    return;
+  }
+  confirmandoBorrado = false;
+  boton.textContent = "Borrando...";
+  borrarManual();
+}
+
+async function borrarManual() {
+  const id = actual.id;
+  try {
+    const r = await fetch("/api/noticia_manual/" + id, { method: "DELETE" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "No se pudo borrar");
+    noticias = noticias.filter(n => n.id !== id);
+    pantalla("lista", "Noticias", false);
+    pintarLista();
+    if (d.video_conservado) {
+      const nota = document.createElement("div");
+      nota.className = "ayuda";
+      nota.style.marginBottom = "10px";
+      nota.textContent = `Noticia borrada. El vídeo que ya habías montado sigue en ${d.video_conservado} del PC.`;
+      $("#lista").prepend(nota);
+    }
+  } catch (e) {
+    $("#btn-borrar-manual").textContent = "Error: " + e.message;
   }
 }
 
@@ -802,8 +874,10 @@ async function aplicarMusica() {
 
 $("#btn-buscar").onclick = buscarOpciones;
 $("#f-buscar").addEventListener("keydown", e => { if (e.key === "Enter") buscarOpciones(); });
-$("#btn-nueva").onclick = abrirManual;
+$("#btn-nueva").onclick = () => abrirManual();
 $("#btn-escribir-guion").onclick = escribirGuionManual;
+$("#btn-editar-manual").onclick = () => abrirManual(actual.id);
+$("#btn-borrar-manual").onclick = pedirBorrado;
 $("#filtro-fecha").onchange = pintarLista;
 $("#filtro-video").onchange = pintarLista;
 $("#btn-ver-video").onclick = verVideoExistente;
@@ -843,7 +917,11 @@ $("#btn-atras").onclick = () => {
   // desde los selectores se vuelve a donde estabas, no a la lista de noticias
   if (pantallaActual === "musica") volverDeMusica();
   else if (pantallaActual === "clips") pantalla("video", "Listo", true);
-  else if (pantallaActual === "manual") pantalla("lista", "Noticias", false);
+  // si estabas retocando una noticia, atrás te devuelve a su guion
+  else if (pantallaActual === "manual") {
+    if (manualEditando) abrirNoticia(manualEditando);
+    else pantalla("lista", "Noticias", false);
+  }
   else pantalla("lista", "Noticias", false);
 };
 $("#btn-otra").onclick = () => { cargarNoticias(); pantalla("lista", "Noticias", false); };
