@@ -234,7 +234,8 @@
       <div class="aviso" id="aviso-no-editable" style="display:none">
         Este vídeo se generó en otra sesión y ya no están guardadas su voz ni su
         lista de clips, así que no se pueden cambiar la música ni los fondos sin
-        rehacerlo. Puedes verlo y compartirlo, o volver atrás y regenerarlo.
+        rehacerlo. Puedes verlo y compartirlo, o volver a abrir la noticia desde
+        el listado y darle a "Rehacer el vídeo desde cero".
       </div>
       <button class="boton" id="btn-remontar" style="display:none;background:var(--ok);color:#0d2b1f">Aplicar cambios al vídeo</button>
 
@@ -366,6 +367,9 @@ async function abrirNoticia(id) {
     const r = await fetch("/api/guion/" + id, { method: "POST" });
     if (!r.ok) throw new Error((await r.json()).detail);
     const datos = await r.json();
+    // Escribir el guion tarda; para cuando llega, el usuario puede haberse ido
+    // a otra noticia o al vídeo ya hecho, y pisarle la pantalla sería peor.
+    if (!sigueAbierta(id)) return;
     guionActual = datos.guion;
     $("#f-hook").value = guionActual.hook || "";
     $("#f-cuerpo").value = guionActual.cuerpo || "";
@@ -376,9 +380,13 @@ async function abrirNoticia(id) {
     $("#btn-generar").disabled = false;
     $("#btn-generar").textContent = actual.tiene_video ? "Rehacer el vídeo desde cero" : "Generar vídeo";
   } catch (e) {
-    $("#btn-generar").textContent = "Error: " + e.message;
+    if (sigueAbierta(id)) $("#btn-generar").textContent = "Error: " + e.message;
   }
 }
+
+// Cierto solo si seguimos editando esa misma noticia: las respuestas lentas no
+// deben tocar el estado de otra que el usuario haya abierto mientras tanto.
+const sigueAbierta = id => pantallaActual === "editor" && actual && actual.id === id;
 
 // Si la noticia ya tiene vídeo, el editor parte de la música que lleva puesta
 async function recuperarMusicaDelVideo(id) {
@@ -386,6 +394,7 @@ async function recuperarMusicaDelVideo(id) {
     const r = await fetch("/api/clips/" + id);
     if (!r.ok) return;
     const d = await r.json();
+    if (!actual || actual.id !== id) return;  // ya se abrió otra noticia
     musicaElegida = d.musica;
     tituloMusica = d.titulo_musica;
     creditoMusica = d.credito_musica;
@@ -396,23 +405,32 @@ async function recuperarMusicaDelVideo(id) {
 // Recupera el vídeo ya montado sin volver a generarlo (tarda un segundo,
 // frente al minuto largo que cuesta rehacer voz, clips y montaje).
 async function verVideoExistente() {
+  const id = actual.id;
   pantalla("video", "Listo", true);
   $("#progreso").style.display = "none";
   $("#error-video").style.display = "none";
-  $("#resultado").style.display = "block";
   $("#btn-remontar").style.display = "none";
   $("#aviso-no-editable").style.display = "none";
+  // Hasta que llegue la respuesta no se enseña nada del vídeo anterior: si no,
+  // tocar ese reproductor o ese deslizador escribiría en el plan de ESTA noticia.
+  $("#resultado").style.display = "none";
+  $("#reproductor").removeAttribute("src");
+  $("#clips").innerHTML = $("#musica-resultado").innerHTML = "";
   clipsCambiados.clear();
   try {
-    const r = await fetch("/api/reel/" + actual.id);
+    const r = await fetch("/api/reel/" + id);
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || "No se pudo abrir el vídeo");
+    if (!actual || actual.id !== id) return;
+    $("#resultado").style.display = "block";
     mostrarVideo(d.video);
     $("#bloque-edicion").style.display = d.editable ? "block" : "none";
     $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
     if (d.editable) cargarClips();
   } catch (e) {
     $("#resultado").style.display = "none";
+    $("#barra-relleno").style.width = "0%";
+    $("#paso").textContent = "";
     $("#progreso").style.display = "block";
     $("#error-video").textContent = e.message;
     $("#error-video").style.display = "block";
@@ -476,10 +494,12 @@ function mostrarVideo(url) {
 let clipsCambiados = new Set(), clipsActuales = [];
 
 async function cargarClips() {
+  const id = actual.id;
   try {
-    const r = await fetch("/api/clips/" + actual.id);
+    const r = await fetch("/api/clips/" + id);
     if (!r.ok) { $("#clips").innerHTML = ""; return; }
     const d = await r.json();
+    if (!actual || actual.id !== id) return;  // el usuario ya se fue a otra
     musicaElegida = d.musica;
     tituloMusica = d.titulo_musica;
     volumenMusica = d.volumen_musica;
