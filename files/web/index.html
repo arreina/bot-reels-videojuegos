@@ -256,6 +256,9 @@
     <div id="resultado" style="display:none">
       <video id="reproductor" controls playsinline></video>
 
+      <!-- para los vídeos que ya no se pueden editar, esta es la única
+           forma de ver la atribución obligatoria de su música -->
+      <div class="ayuda" id="credito-suelto" style="display:none"></div>
       <div id="bloque-edicion">
         <label>Música de fondo</label>
         <div id="musica-resultado"></div>
@@ -436,9 +439,11 @@ async function abrirGaleria() {
   $("#galeria").innerHTML = '<div class="cargando"><div class="spinner"></div>Buscando vídeos...</div>';
   let d;
   try {
-    d = await (await fetch("/api/galeria")).json();
+    const r = await fetch("/api/galeria");
+    d = await r.json();
+    if (!r.ok || !Array.isArray(d.videos)) throw new Error(d.detail || "Respuesta inesperada");
   } catch (e) {
-    $("#galeria").innerHTML = '<div class="aviso">No se pudo leer la galería.</div>';
+    $("#galeria").innerHTML = `<div class="aviso">No se pudo leer la galería: ${escapar(e.message)}</div>`;
     return;
   }
   if (!d.videos.length) {
@@ -609,6 +614,8 @@ async function verVideoExistente() {
   // Hasta que llegue la respuesta no se enseña nada del vídeo anterior: si no,
   // tocar ese reproductor o ese deslizador escribiría en el plan de ESTA noticia.
   $("#resultado").style.display = "none";
+  $("#credito-suelto").style.display = "none";
+  pararVideo();
   $("#reproductor").removeAttribute("src");
   $("#clips").innerHTML = $("#musica-resultado").innerHTML = "";
   clipsCambiados.clear();
@@ -621,6 +628,10 @@ async function verVideoExistente() {
     mostrarVideo(d.video);
     $("#bloque-edicion").style.display = d.editable ? "block" : "none";
     $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
+    // sin bloque de música, el crédito se enseña suelto: hay que ponerlo al subirlo
+    const suelto = $("#credito-suelto");
+    suelto.textContent = creditoMusica ? "📋 " + creditoMusica : "";
+    suelto.style.display = !d.editable && creditoMusica ? "block" : "none";
     if (d.editable) cargarClips();
   } catch (e) {
     $("#resultado").style.display = "none";
@@ -671,6 +682,13 @@ async function seguir(trabajo) {
   $("#aviso-no-editable").style.display = "none";
   mostrarVideo(t.video);
   cargarClips();
+}
+
+// Salir de la pantalla del vídeo no lo detiene solo: seguiría sonando encima
+// de la galería o del listado hasta que abras otro.
+function pararVideo() {
+  const reproductor = $("#reproductor");
+  if (reproductor.getAttribute("src") && !reproductor.paused) reproductor.pause();
 }
 
 function mostrarVideo(url) {
@@ -969,6 +987,7 @@ async function compartir(url) {
 }
 
 $("#btn-atras").onclick = () => {
+  if (pantallaActual === "video") pararVideo();
   // desde los selectores se vuelve a donde estabas, no a la lista de noticias
   if (pantallaActual === "musica") volverDeMusica();
   else if (pantallaActual === "clips") pantalla("video", "Listo", true);
@@ -981,7 +1000,7 @@ $("#btn-atras").onclick = () => {
   else if (pantallaActual === "video" && origenVideo === "galeria") abrirGaleria();
   else pantalla("lista", "Noticias", false);
 };
-$("#btn-otra").onclick = () => { cargarNoticias(); pantalla("lista", "Noticias", false); };
+$("#btn-otra").onclick = () => { pararVideo(); cargarNoticias(); pantalla("lista", "Noticias", false); };
 $("#btn-refrescar").onclick = () => cargarNoticias(true);
 
 cargarNoticias();

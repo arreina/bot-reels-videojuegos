@@ -329,7 +329,14 @@ def _plan_path(base_id: str) -> Path:
 
 def _cargar_plan(base_id: str) -> dict:
     ruta = _plan_path(base_id)
-    return json.loads(ruta.read_text(encoding="utf-8")) if ruta.is_file() else {}
+    if not ruta.is_file():
+        return {}
+    try:
+        return json.loads(ruta.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        # se guarda sin ser atómico: leerlo a medio escribir no puede tumbar
+        # la galería entera, que lo pide para todos los vídeos a la vez
+        return {}
 
 
 def _guardar_plan(base_id: str, plan: dict) -> None:
@@ -615,18 +622,34 @@ def elegir_clip(base_id: str, indice: int, eleccion: Eleccion):
     return listar_clips(base_id)
 
 
-_duraciones: dict[tuple[str, int], float] = {}
+_duraciones: dict[tuple[str, int], float | None] = {}
 
 
-def _duracion_cacheada(ruta: Path) -> float | None:
+def _duracion_cacheada(ruta: Path, momento: int) -> float | None:
     """ffprobe es un proceso nuevo cada vez; con la galería entera se nota."""
-    clave = (str(ruta), int(ruta.stat().st_mtime))
+    if len(_duraciones) > 500:  # cada remontaje añade una clave nueva
+        _duraciones.clear()
+    clave = (str(ruta), momento)
     if clave not in _duraciones:
         try:
             _duraciones[clave] = round(gv.duracion_audio(ruta), 1)
         except (ValueError, OSError):
             _duraciones[clave] = None
     return _duraciones[clave]
+
+
+def _miniatura_de_video(ruta: Path, momento: int) -> Path | None:
+    """
+    Miniatura al día del vídeo.
+
+    Los reels se sobrescriben en su sitio al rehacerlos, así que hay que tirar
+    la miniatura vieja: generar_miniatura reutiliza la cacheada sin mirar fechas
+    (para los clips de fondo vale, porque esos no cambian nunca).
+    """
+    destino = gv.BROLL_CACHE / "miniaturas" / f"{ruta.stem}.jpg"
+    if destino.is_file() and destino.stat().st_mtime < momento:
+        destino.unlink(missing_ok=True)
+    return gv.generar_miniatura(ruta)
 
 
 @app.get("/api/galeria")
@@ -643,22 +666,33 @@ def galeria():
             except (json.JSONDecodeError, OSError):
                 continue
 
+    # un mp4 a medio escribir no es un vídeo: aparecería roto y sin duración
+    montando = {t["base"] for t in _trabajos.values()
+                if t.get("estado") == "trabajando" and t.get("base")}
+
     creditos = _creditos_musica()
     videos, espacio = [], 0
-    for ruta in gv.SALIDA_DIR.glob("*.mp4"):
-        datos = ruta.stat()
-        espacio += datos.st_size
+    for ruta in sorted(gv.SALIDA_DIR.glob("*.mp4")):
         base_id = ruta.stem
+        if base_id in montando:
+            continue
+        try:
+            datos = ruta.stat()
+        except OSError:  # lo han borrado entre el glob y el stat
+            continue
+        espacio += datos.st_size
+        momento = int(datos.st_mtime)
         plan = _cargar_plan(base_id)
         pista = Path(plan["musica"]).name if plan.get("musica") else None
-        mini = gv.generar_miniatura(ruta)
+        mini = _miniatura_de_video(ruta, momento)
         videos.append({
             "id": base_id,
             "titulo": titulos.get(base_id) or ruta.name,
-            "video": f"/videos/{ruta.name}?v={int(datos.st_mtime)}",
-            "miniatura": f"/miniaturas/{mini.name}" if mini else None,
-            "fecha": datetime.fromtimestamp(datos.st_mtime, timezone.utc).isoformat(),
-            "duracion": _duracion_cacheada(ruta),
+            "video": f"/videos/{ruta.name}?v={momento}",
+            # el sufijo también aquí: si no, el navegador enseña la miniatura vieja
+            "miniatura": f"/miniaturas/{mini.name}?v={momento}" if mini else None,
+            "fecha": datetime.fromtimestamp(momento, timezone.utc).isoformat(),
+            "duracion": _duracion_cacheada(ruta, momento),
             "tamano": datos.st_size,
             "editable": (gv.TMP_DIR / f"{base_id}.wav").is_file() and bool(plan),
             # el crédito hay que ponerlo en la descripción al resubirlo
@@ -689,7 +723,9 @@ def remontar(base_id: str):
     if not (gv.TMP_DIR / f"{base_id}.wav").is_file():
         raise HTTPException(404, "No hay voz generada para esa noticia")
     trabajo_id = uuid.uuid4().hex[:8]
-    _trabajos[trabajo_id] = {"estado": "trabajando", "paso": "Empezando...", "porcentaje": 10}
+    # "base" deja saber qué mp4 se está escribiendo ahora mismo (lo usa la galería)
+    _trabajos[trabajo_id] = {"estado": "trabajando", "paso": "Empezando...",
+                             "porcentaje": 10, "base": base_id}
     threading.Thread(target=_remontar_video, args=(trabajo_id, base_id), daemon=True).start()
     return {"trabajo": trabajo_id}
 
@@ -719,7 +755,8 @@ def crear_video(g: GuionEditado):
         json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
 
     trabajo_id = uuid.uuid4().hex[:8]
-    _trabajos[trabajo_id] = {"estado": "trabajando", "paso": "Empezando...", "porcentaje": 5}
+    _trabajos[trabajo_id] = {"estado": "trabajando", "paso": "Empezando...",
+                             "porcentaje": 5, "base": g.id}
     threading.Thread(target=_producir_video, args=(trabajo_id, datos), daemon=True).start()
     return {"trabajo": trabajo_id}
 
