@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12121c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Bot de reels</title>
+<style>
+  :root {
+    --fondo: #12121c;
+    --tarjeta: #1c1c2b;
+    --tarjeta-alta: #262639;
+    --acento: #9d4edd;
+    --acento-claro: #c77dff;
+    --texto: #f2f2f7;
+    --tenue: #9a9ab0;
+    --borde: #2e2e44;
+    --ok: #3ddc97;
+    --error: #ff6b6b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--fondo); color: var(--texto);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px; line-height: 1.45;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(18,18,28,.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--borde);
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 18px; margin: 0; flex: 1; font-weight: 650; }
+  .icono-btn {
+    background: var(--tarjeta-alta); border: 1px solid var(--borde); color: var(--texto);
+    border-radius: 10px; padding: 8px 12px; font-size: 15px; cursor: pointer;
+  }
+  main { padding: 16px; max-width: 720px; margin: 0 auto; }
+  .pantalla { display: none; }
+  .pantalla.activa { display: block; }
+
+  .filtros { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; margin-bottom: 4px; }
+  .filtros::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: 0 0 auto; padding: 7px 14px; border-radius: 999px; font-size: 14px;
+    background: var(--tarjeta); border: 1px solid var(--borde); color: var(--tenue); cursor: pointer;
+  }
+  .chip.activo { background: var(--acento); border-color: var(--acento); color: #fff; font-weight: 600; }
+
+  .noticia {
+    background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 14px;
+    padding: 14px; margin-bottom: 10px; cursor: pointer;
+  }
+  .noticia:active { background: var(--tarjeta-alta); }
+  .noticia .meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .fuente { font-size: 12px; font-weight: 700; color: var(--acento-claro); text-transform: uppercase; letter-spacing: .04em; }
+  .marca { font-size: 12px; color: var(--tenue); margin-left: auto; }
+  .noticia h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.35; }
+  .noticia p { margin: 6px 0 0; font-size: 13px; color: var(--tenue);
+               display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+  label { display: block; font-size: 13px; color: var(--tenue); margin: 16px 0 6px;
+          text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  textarea, input[type=text] {
+    width: 100%; background: var(--tarjeta); color: var(--texto);
+    border: 1px solid var(--borde); border-radius: 12px; padding: 12px;
+    font: inherit; font-size: 15px; resize: vertical;
+  }
+  textarea:focus, input:focus { outline: 2px solid var(--acento); border-color: transparent; }
+  .ayuda { font-size: 12px; color: var(--tenue); margin-top: 6px; }
+
+  .boton {
+    width: 100%; padding: 15px; border: none; border-radius: 14px;
+    background: var(--acento); color: #fff; font-size: 16px; font-weight: 650;
+    cursor: pointer; margin-top: 20px;
+  }
+  .boton:disabled { opacity: .5; }
+  .boton.secundario { background: var(--tarjeta-alta); border: 1px solid var(--borde); }
+
+  .cargando { text-align: center; padding: 48px 16px; color: var(--tenue); }
+  .spinner {
+    width: 34px; height: 34px; margin: 0 auto 16px;
+    border: 3px solid var(--borde); border-top-color: var(--acento);
+    border-radius: 50%; animation: girar .8s linear infinite;
+  }
+  @keyframes girar { to { transform: rotate(360deg); } }
+
+  .barra { height: 8px; background: var(--tarjeta-alta); border-radius: 999px; overflow: hidden; margin: 16px 0 8px; }
+  .barra > div { height: 100%; background: linear-gradient(90deg, var(--acento), var(--acento-claro));
+                 width: 5%; transition: width .4s ease; }
+  video { width: 100%; border-radius: 14px; background: #000; margin-top: 8px; }
+  .aviso { background: rgba(255,107,107,.12); border: 1px solid var(--error); color: #ffc9c9;
+           padding: 12px; border-radius: 12px; font-size: 14px; margin-top: 16px; }
+
+  .clip { display: flex; align-items: center; gap: 12px; background: var(--tarjeta);
+          border: 1px solid var(--borde); border-radius: 12px; padding: 8px; margin-bottom: 8px; }
+  .clip.cambiado { border-color: var(--ok); }
+  .clip img { width: 58px; height: 100px; object-fit: cover; border-radius: 8px; background: #000; flex: 0 0 auto; }
+  .clip .datos { flex: 1; min-width: 0; }
+  .clip .termino { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip .autor { font-size: 12px; color: var(--tenue); }
+  .clip button { background: var(--tarjeta-alta); border: 1px solid var(--borde); color: var(--texto);
+                 border-radius: 10px; padding: 10px 14px; font-size: 14px; cursor: pointer; flex: 0 0 auto; }
+  .clip button:disabled { opacity: .5; }
+
+  .rejilla { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .opcion { position: relative; border-radius: 10px; overflow: hidden; background: var(--tarjeta);
+            border: 2px solid transparent; cursor: pointer; }
+  .opcion img { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; }
+  .opcion .sello { position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px;
+                   background: rgba(0,0,0,.65); color: #fff; padding: 3px 5px;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .opcion.eligiendo { border-color: var(--acento); opacity: .6; }
+
+  .fecha { font-size: 12px; color: var(--tenue); }
+  .caja { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 12px; padding: 12px; }
+  .caja .fila { display: flex; align-items: center; gap: 10px; }
+  .caja .pista { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .caja button { background: var(--tarjeta-alta); border: 1px solid var(--borde); color: var(--texto);
+                 border-radius: 10px; padding: 9px 13px; font-size: 14px; cursor: pointer; flex: 0 0 auto; }
+  input[type=range] { width: 100%; margin-top: 14px; accent-color: var(--acento); height: 28px; }
+  .cancion { display: flex; align-items: center; gap: 12px; background: var(--tarjeta);
+             border: 1px solid var(--borde); border-radius: 12px; padding: 12px; margin-bottom: 8px; }
+  .cancion.activa { border-color: var(--acento); }
+  .cancion .nombre { flex: 1; font-size: 14px; }
+  .titulo-noticia { font-size: 14px; color: var(--tenue); margin: 0 0 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <button class="icono-btn" id="btn-atras" style="display:none">‹</button>
+  <h1 id="titulo-pantalla">Noticias</h1>
+  <button class="icono-btn" id="btn-refrescar">↻</button>
+</header>
+
+<main>
+  <!-- 1. Lista de noticias -->
+  <section class="pantalla activa" id="pantalla-lista">
+    <div class="filtros" id="filtros"></div>
+    <div id="lista"></div>
+  </section>
+
+  <!-- 2. Editor del guion -->
+  <section class="pantalla" id="pantalla-editor">
+    <p class="titulo-noticia" id="editor-titulo"></p>
+    <label for="f-hook">Gancho</label>
+    <textarea id="f-hook" rows="2"></textarea>
+    <label for="f-cuerpo">Cuerpo</label>
+    <textarea id="f-cuerpo" rows="7"></textarea>
+    <label for="f-cierre">Cierre</label>
+    <textarea id="f-cierre" rows="3"></textarea>
+    <label for="f-hashtags">Hashtags</label>
+    <input type="text" id="f-hashtags">
+    <label for="f-broll">Búsqueda de vídeos de fondo</label>
+    <input type="text" id="f-broll">
+    <p class="ayuda">Términos en inglés separados por comas. Genéricos, sin nombres de juegos ni marcas.</p>
+
+    <label>Música de fondo</label>
+    <div id="musica-editor"></div>
+
+    <button class="boton" id="btn-generar">Generar vídeo</button>
+  </section>
+
+  <!-- 5. Selector de canciones -->
+  <section class="pantalla" id="pantalla-musica">
+    <p class="ayuda" style="margin-top:0">Toca ▶ para escuchar, o el nombre para elegirla.</p>
+    <div id="canciones"></div>
+  </section>
+
+  <!-- 4. Buscador de clips de fondo -->
+  <section class="pantalla" id="pantalla-clips">
+    <label for="f-buscar">Buscar vídeo de fondo</label>
+    <div style="display:flex;gap:8px">
+      <input type="text" id="f-buscar" placeholder="ej. neon arcade" style="flex:1">
+      <button class="icono-btn" id="btn-buscar">Buscar</button>
+    </div>
+    <p class="ayuda">Busca en inglés: los bancos de vídeo tienen mucho más material.</p>
+    <div id="opciones" class="rejilla"></div>
+  </section>
+
+  <!-- 3. Progreso y resultado -->
+  <section class="pantalla" id="pantalla-video">
+    <div id="progreso">
+      <div class="barra"><div id="barra-relleno"></div></div>
+      <p style="color:var(--tenue);font-size:14px" id="paso">Empezando...</p>
+      <div class="aviso" id="error-video" style="display:none"></div>
+    </div>
+    <div id="resultado" style="display:none">
+      <video id="reproductor" controls playsinline></video>
+
+      <label>Música de fondo</label>
+      <div id="musica-resultado"></div>
+
+      <label>Vídeos de fondo <span style="text-transform:none;letter-spacing:0">(se alternan cada 4 s)</span></label>
+      <div id="clips"></div>
+      <button class="boton" id="btn-remontar" style="display:none;background:var(--ok);color:#0d2b1f">Aplicar cambios al vídeo</button>
+
+      <button class="boton" id="btn-compartir" style="display:none">Compartir / Subir a Instagram</button>
+      <div class="aviso" id="aviso-compartir" style="display:none">
+        Para poder enviar el vídeo a Instagram, WhatsApp o Telegram, Android exige
+        una conexión segura. Abre esta página por <b>https://</b> en vez de http://
+        (ejecuta <code>./crear_certificado.sh</code> en el PC si aún no lo has hecho).
+        Mientras tanto, con Descargar el vídeo queda en la carpeta Descargas del móvil.
+      </div>
+      <a id="btn-descargar" class="boton secundario" style="display:block;text-align:center;text-decoration:none" download>Descargar</a>
+      <button class="boton secundario" id="btn-otra">Elegir otra noticia</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let noticias = [], fuenteActiva = "Todas", actual = null, guionActual = null, pantallaActual = "lista";
+let traduciendo = 0, temporizadorTraduccion = null;
+const BANDERAS = { ja: "🇯🇵", en: "🇬🇧", es: "" };
+
+function pantalla(nombre, titulo, atras) {
+  pantallaActual = nombre;
+  document.querySelectorAll(".pantalla").forEach(p => p.classList.remove("activa"));
+  $("#pantalla-" + nombre).classList.add("activa");
+  $("#titulo-pantalla").textContent = titulo;
+  $("#btn-atras").style.display = atras ? "block" : "none";
+  $("#btn-refrescar").style.display = nombre === "lista" ? "block" : "none";
+  window.scrollTo(0, 0);
+}
+
+async function cargarNoticias(refrescar = false) {
+  $("#lista").innerHTML = '<div class="cargando"><div class="spinner"></div>Leyendo los feeds...</div>';
+  try {
+    const r = await fetch("/api/noticias" + (refrescar ? "?refrescar=true" : ""));
+    const d = await r.json();
+    noticias = d.noticias;
+    traduciendo = d.traduciendo;
+  } catch (e) {
+    $("#lista").innerHTML = '<div class="aviso">No se pudo conectar con el PC. ¿Sigue encendido el servidor?</div>';
+    return;
+  }
+  pintarFiltros();
+  pintarLista();
+  // las traducciones van en segundo plano: se recarga solo cuando acaben
+  if (traduciendo > 0) {
+    clearTimeout(temporizadorTraduccion);
+    temporizadorTraduccion = setTimeout(() => cargarNoticias(), 15000);
+  }
+}
+
+function pintarFiltros() {
+  const fuentes = ["Todas", ...new Set(noticias.map(n => n.fuente))];
+  $("#filtros").innerHTML = fuentes
+    .map(f => `<div class="chip ${f === fuenteActiva ? "activo" : ""}" data-f="${f}">${f}</div>`).join("");
+  $("#filtros").querySelectorAll(".chip").forEach(c => c.onclick = () => {
+    fuenteActiva = c.dataset.f; pintarFiltros(); pintarLista();
+  });
+}
+
+function pintarLista() {
+  const vistas = noticias.filter(n => fuenteActiva === "Todas" || n.fuente === fuenteActiva).slice(0, 60);
+  const aviso = traduciendo > 0
+    ? `<div class="ayuda" style="margin-bottom:10px">🌐 Traduciendo ${traduciendo} noticias al español...</div>` : "";
+  $("#lista").innerHTML = aviso + vistas.map(n => `
+    <div class="noticia" data-id="${n.id}">
+      <div class="meta">
+        <span class="fuente">${BANDERAS[n.idioma] || ""} ${n.fuente}</span>
+        <span class="fecha">${fechaBonita(n.fecha)}</span>
+        <span class="marca">${n.tiene_video ? "✅ vídeo hecho" : n.tiene_guion ? "📝 guion listo" : ""}</span>
+      </div>
+      <h3>${escapar(n.titulo)}</h3>
+      <p>${escapar(n.resumen || "")}</p>
+    </div>`).join("") || '<div class="cargando">No hay noticias de esta fuente.</div>';
+  $("#lista").querySelectorAll(".noticia").forEach(el => el.onclick = () => abrirNoticia(el.dataset.id));
+}
+
+const escapar = t => (t || "").replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+
+// "hace 20 min", "hace 3 h", o la fecha si ya tiene días
+function fechaBonita(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), minutos = Math.floor((Date.now() - d) / 60000);
+  if (minutos < 1) return "ahora mismo";
+  if (minutos < 60) return `hace ${minutos} min`;
+  if (minutos < 60 * 24) return `hace ${Math.floor(minutos / 60)} h`;
+  if (minutos < 60 * 24 * 7) return `hace ${Math.floor(minutos / 1440)} días`;
+  return d.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+}
+
+async function abrirNoticia(id) {
+  actual = noticias.find(n => n.id === id);
+  pantalla("editor", "Guion", true);
+  $("#editor-titulo").textContent = actual.titulo;
+  ["#f-hook", "#f-cuerpo", "#f-cierre", "#f-hashtags", "#f-broll"].forEach(s => $(s).value = "");
+  $("#btn-generar").disabled = true;
+  $("#btn-generar").textContent = "Escribiendo el guion con Claude...";
+  try {
+    const r = await fetch("/api/guion/" + id, { method: "POST" });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    const datos = await r.json();
+    guionActual = datos.guion;
+    $("#f-hook").value = guionActual.hook || "";
+    $("#f-cuerpo").value = guionActual.cuerpo || "";
+    $("#f-cierre").value = guionActual.cierre || "";
+    $("#f-hashtags").value = (guionActual.hashtags || []).join(" ");
+    $("#f-broll").value = (guionActual.broll || []).join(", ");
+    pintarMusica("musica-editor");
+    $("#btn-generar").disabled = false;
+    $("#btn-generar").textContent = "Generar vídeo";
+  } catch (e) {
+    $("#btn-generar").textContent = "Error: " + e.message;
+  }
+}
+
+$("#btn-generar").onclick = async () => {
+  const cuerpo = {
+    id: actual.id, titulo: actual.titulo, fuente: actual.fuente, url: actual.url,
+    hook: $("#f-hook").value.trim(),
+    cuerpo: $("#f-cuerpo").value.trim(),
+    cierre: $("#f-cierre").value.trim(),
+    hashtags: $("#f-hashtags").value.split(/[\s,]+/).filter(Boolean),
+    broll: $("#f-broll").value.split(",").map(s => s.trim()).filter(Boolean),
+    musica: musicaElegida,
+    volumen_musica: volumenMusica,
+  };
+  pantalla("video", "Generando", true);
+  $("#progreso").style.display = "block";
+  $("#error-video").style.display = "none";
+  $("#resultado").style.display = "none";
+  clipsCambiados.clear();
+  const r = await fetch("/api/video", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo),
+  });
+  seguir((await r.json()).trabajo);
+};
+
+async function seguir(trabajo) {
+  const r = await fetch("/api/video/" + trabajo);
+  const t = await r.json();
+  $("#barra-relleno").style.width = t.porcentaje + "%";
+  $("#paso").textContent = t.paso;
+  if (t.estado === "trabajando") return setTimeout(() => seguir(trabajo), 1500);
+  if (t.estado === "error") {
+    $("#error-video").textContent = t.paso;
+    $("#error-video").style.display = "block";
+    return;
+  }
+  $("#progreso").style.display = "none";
+  $("#resultado").style.display = "block";
+  $("#reproductor").src = t.video;
+  $("#btn-descargar").href = t.video;
+  $("#titulo-pantalla").textContent = "Listo";
+  // El menú de compartir de Android solo existe en contexto seguro (https)
+  const puedeCompartir = window.isSecureContext && navigator.canShare &&
+                         navigator.canShare({ files: [new File([""], "x.mp4", { type: "video/mp4" })] });
+  $("#btn-compartir").style.display = puedeCompartir ? "block" : "none";
+  $("#aviso-compartir").style.display = puedeCompartir ? "none" : "block";
+  $("#btn-compartir").onclick = () => compartir(t.video);
+  cargarClips();
+}
+
+// --- Clips de fondo: se pueden cambiar uno a uno sin tocar los demás ---
+let clipsCambiados = new Set(), clipsActuales = [];
+
+async function cargarClips() {
+  try {
+    const r = await fetch("/api/clips/" + actual.id);
+    if (!r.ok) { $("#clips").innerHTML = ""; return; }
+    const d = await r.json();
+    musicaElegida = d.musica;
+    volumenMusica = d.volumen_musica;
+    creditoMusica = d.credito_musica;
+    pintarMusica("musica-resultado");
+    pintarClips(d.clips);
+  } catch (e) { $("#clips").innerHTML = ""; }
+}
+
+function pintarClips(clips) {
+  clipsActuales = clips;
+  $("#clips").innerHTML = clips.map((c, i) => `
+    <div class="clip ${clipsCambiados.has(i) ? "cambiado" : ""}">
+      ${c.miniatura ? `<img src="${c.miniatura}" alt="">` : '<img alt="">'}
+      <div class="datos">
+        <div class="termino">${escapar(c.termino || "clip de fondo")}</div>
+        <div class="autor">${c.autor ? "de " + escapar(c.autor) : ""}</div>
+      </div>
+      <button data-i="${i}">Cambiar</button>
+    </div>`).join("");
+  $("#clips").querySelectorAll("button").forEach(b => b.onclick = () => cambiarClip(+b.dataset.i));
+}
+
+// Abre el buscador para sustituir el clip de esa posición
+let indiceEditando = null;
+
+function cambiarClip(indice) {
+  indiceEditando = indice;
+  const clip = clipsActuales[indice] || {};
+  $("#f-buscar").value = clip.termino || "";
+  $("#opciones").innerHTML = "";
+  pantalla("clips", "Elegir vídeo", true);
+  if (clip.termino) buscarOpciones();
+}
+
+async function buscarOpciones() {
+  const q = $("#f-buscar").value.trim();
+  if (!q) return;
+  $("#opciones").innerHTML = '<div class="cargando"><div class="spinner"></div>Buscando vídeos...</div>';
+  try {
+    const r = await fetch("/api/buscar_clips?q=" + encodeURIComponent(q));
+    if (!r.ok) throw new Error((await r.json()).detail);
+    const opciones = (await r.json()).opciones;
+    if (!opciones.length) {
+      $("#opciones").innerHTML = '<div class="cargando">Sin resultados. Prueba otras palabras en inglés.</div>';
+      return;
+    }
+    $("#opciones").innerHTML = opciones.map((o, i) => `
+      <div class="opcion" data-i="${i}">
+        <img src="${o.imagen}" loading="lazy" alt="">
+        <div class="sello">${escapar(o.fuente)}</div>
+      </div>`).join("");
+    $("#opciones").querySelectorAll(".opcion").forEach(el =>
+      el.onclick = () => elegirOpcion(opciones[+el.dataset.i], el));
+  } catch (e) {
+    $("#opciones").innerHTML = `<div class="aviso">${escapar(e.message)}</div>`;
+  }
+}
+
+async function elegirOpcion(candidato, el) {
+  el.classList.add("eligiendo");
+  try {
+    const r = await fetch(`/api/clips/${actual.id}/elegir/${indiceEditando}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidato }),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    clipsCambiados.add(indiceEditando);
+    pintarClips((await r.json()).clips);
+    $("#btn-remontar").style.display = "block";
+    pantalla("video", "Listo", true);
+    $("#resultado").style.display = "block";
+    $("#progreso").style.display = "none";
+  } catch (e) {
+    el.classList.remove("eligiendo");
+    alert(e.message);
+  }
+}
+
+// --- Música de fondo: pista y volumen, tanto antes como después de generar ---
+let musicaElegida = null, volumenMusica = 0.20, creditoMusica = null, contenedorMusica = "musica-editor";
+
+// Ojo: hay dos bloques de música a la vez (editor y resultado). Nada de id=,
+// o querySelector devolvería siempre el del editor y el otro quedaría muerto.
+function pintarMusica(destino) {
+  contenedorMusica = destino;
+  const pct = Math.round(volumenMusica * 100);
+  const caja = $("#" + destino);
+  const nombre = musicaElegida ? musicaElegida.replace(/\.[^.]+$/, "") : "Aleatoria en cada vídeo";
+  caja.innerHTML = `
+    <div class="caja">
+      <div class="fila">
+        <div class="pista">${escapar(nombre)}</div>
+        <button class="mus-cambiar">Cambiar</button>
+      </div>
+      <input type="range" class="mus-volumen" min="0" max="60" value="${pct}">
+      <div class="ayuda" style="margin-top:2px">Volumen de la música:
+        <b class="mus-etiqueta">${pct}%</b> (la voz siempre manda)</div>
+      ${creditoMusica ? `<div class="ayuda" style="margin-top:8px">📋 ${escapar(creditoMusica)}</div>` : ""}
+    </div>`;
+  caja.querySelector(".mus-cambiar").onclick = abrirMusica;
+  const rango = caja.querySelector(".mus-volumen");
+  const etiqueta = caja.querySelector(".mus-etiqueta");
+  rango.oninput = () => etiqueta.textContent = rango.value + "%";
+  rango.onchange = () => {
+    volumenMusica = +rango.value / 100;
+    if (destino === "musica-resultado") aplicarMusica();
+  };
+}
+
+async function abrirMusica() {
+  pantalla("musica", "Música", true);
+  $("#canciones").innerHTML = '<div class="cargando"><div class="spinner"></div>Cargando...</div>';
+  const pistas = await (await fetch("/api/musica")).json();
+  const filas = [{ nombre: null, url: null }, ...pistas];
+  $("#canciones").innerHTML = filas.map((p, i) => `
+    <div class="cancion ${p.nombre === musicaElegida ? "activa" : ""}" data-i="${i}">
+      <div class="nombre">${p.nombre ? escapar(p.nombre.replace(/\.[^.]+$/, "")) : "🎲 Aleatoria en cada vídeo"}</div>
+      ${p.url ? `<button data-url="${p.url}">▶</button>` : ""}
+    </div>`).join("");
+  $("#canciones").querySelectorAll(".cancion").forEach(el => {
+    const p = filas[+el.dataset.i];
+    el.querySelector(".nombre").onclick = () => {
+      musicaElegida = p.nombre;
+      creditoMusica = p.credito;
+      volverDeMusica();
+    };
+    const play = el.querySelector("button");
+    if (play) play.onclick = e => { e.stopPropagation(); escuchar(play.dataset.url, play); };
+  });
+}
+
+let reproduciendo = null;
+function escuchar(url, boton) {
+  if (reproduciendo) { reproduciendo.audio.pause(); reproduciendo.boton.textContent = "▶"; }
+  if (reproduciendo && reproduciendo.url === url) { reproduciendo = null; return; }
+  const audio = new Audio(url);
+  audio.play();
+  boton.textContent = "⏸";
+  reproduciendo = { audio, boton, url };
+  audio.onended = () => { boton.textContent = "▶"; reproduciendo = null; };
+}
+
+function volverDeMusica() {
+  if (reproduciendo) { reproduciendo.audio.pause(); reproduciendo = null; }
+  if (contenedorMusica === "musica-resultado") {
+    pantalla("video", "Listo", true);
+    $("#resultado").style.display = "block";
+    $("#progreso").style.display = "none";
+    pintarMusica("musica-resultado");
+    aplicarMusica();
+  } else {
+    pantalla("editor", "Guion", true);
+    pintarMusica("musica-editor");
+  }
+}
+
+async function aplicarMusica() {
+  await fetch("/api/musica/" + actual.id, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ musica: musicaElegida, volumen_musica: volumenMusica }),
+  });
+  $("#btn-remontar").style.display = "block";
+}
+
+$("#btn-buscar").onclick = buscarOpciones;
+$("#f-buscar").addEventListener("keydown", e => { if (e.key === "Enter") buscarOpciones(); });
+
+$("#btn-remontar").onclick = async () => {
+  pantalla("video", "Rehaciendo", true);
+  $("#progreso").style.display = "block";
+  $("#error-video").style.display = "none";
+  $("#resultado").style.display = "none";
+  $("#btn-remontar").style.display = "none";
+  clipsCambiados.clear();
+  const r = await fetch("/api/remontar/" + actual.id, { method: "POST" });
+  seguir((await r.json()).trabajo);
+};
+
+async function compartir(url) {
+  const btn = $("#btn-compartir");
+  const original = btn.textContent;
+  btn.textContent = "Preparando el vídeo...";
+  btn.disabled = true;
+  try {
+    const blob = await (await fetch(url)).blob();
+    const nombre = (actual.titulo || "reel").slice(0, 40).replace(/[^\wáéíóúñ ]/gi, "").trim() || "reel";
+    const archivo = new File([blob], nombre + ".mp4", { type: "video/mp4" });
+    await navigator.share({ files: [archivo], title: actual.titulo });
+  } catch (e) {
+    if (e.name !== "AbortError") alert("No se pudo compartir: " + e.message);
+  } finally {
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+
+$("#btn-atras").onclick = () => {
+  // desde los selectores se vuelve a donde estabas, no a la lista de noticias
+  if (pantallaActual === "musica") volverDeMusica();
+  else if (pantallaActual === "clips") pantalla("video", "Listo", true);
+  else pantalla("lista", "Noticias", false);
+};
+$("#btn-otra").onclick = () => { cargarNoticias(); pantalla("lista", "Noticias", false); };
+$("#btn-refrescar").onclick = () => cargarNoticias(true);
+
+cargarNoticias();
+</script>
+</body>
+</html>

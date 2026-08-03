@@ -1,0 +1,7 @@
+# Dependencias mínimas del bot (probadas con Python 3.12)
+anthropic==0.120.2       # solo se usa si defines ANTHROPIC_API_KEY
+fastapi==0.141.1
+feedparser==6.0.14
+piper-tts==1.6.0
+requests==2.34.2
+uvicorn==0.52.1

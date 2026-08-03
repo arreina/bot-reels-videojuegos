@@ -1,0 +1,26 @@
+# Secretos: las claves de Pexels/Pixabay nunca se suben (ver files/.env.ejemplo)
+files/.env
+certificado/
+
+# Entorno y binarios pesados: se instalan aparte, el README explica cómo
+.venv/
+bin/
+voces/
+__pycache__/
+*.pyc
+
+# Música con licencia CC-BY: se descarga con ./descargar_musica.sh
+files/musica/*.mp3
+
+# Material descargado o generado por el propio bot
+files/broll_cache/
+files/videos/
+files/tmp_video/
+files/guiones/
+files/estado_noticias.json
+files/traducciones.json
+*.mp4
+*.zip
+
+# Ajustes locales de Claude Code
+.claude/settings.local.json
