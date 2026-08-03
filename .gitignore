@@ -20,6 +20,7 @@ files/videos/
 files/tmp_video/
 files/guiones/
 files/estado_noticias.json
+files/noticias_manuales.json
 files/traducciones.json
 *.mp4
 *.zip

@@ -144,6 +144,7 @@
 <header>
   <button class="icono-btn" id="btn-atras" style="display:none">‹</button>
   <h1 id="titulo-pantalla">Noticias</h1>
+  <button class="icono-btn" id="btn-nueva" title="Escribir una noticia a mano">+</button>
   <button class="icono-btn" id="btn-refrescar">↻</button>
 </header>
 
@@ -167,6 +168,21 @@
       </select>
     </div>
     <div id="lista"></div>
+  </section>
+
+  <!-- 6. Noticia escrita a mano -->
+  <section class="pantalla" id="pantalla-manual">
+    <p class="ayuda" style="margin-top:0">Para contar algo que no sale en los feeds.
+      Claude escribirá el guion a partir de lo que le pongas aquí.</p>
+    <label for="m-titulo">Titular</label>
+    <input type="text" id="m-titulo" placeholder="ej. Nintendo anuncia la fecha del nuevo Zelda">
+    <label for="m-texto">De qué va</label>
+    <textarea id="m-texto" rows="6" placeholder="Cuéntalo con tus palabras: datos, fechas, precios, quién lo ha dicho... Cuanto más concreto, mejor sale el guion."></textarea>
+    <label for="m-url">Enlace (opcional)</label>
+    <input type="text" id="m-url" placeholder="https://...">
+    <p class="ayuda">El enlace solo se guarda como referencia; el guion sale de lo que escribas arriba.</p>
+    <div class="aviso" id="error-manual" style="display:none"></div>
+    <button class="boton" id="btn-escribir-guion">Escribir el guion</button>
   </section>
 
   <!-- 2. Editor del guion -->
@@ -265,6 +281,7 @@ function pantalla(nombre, titulo, atras) {
   $("#titulo-pantalla").textContent = titulo;
   $("#btn-atras").style.display = atras ? "block" : "none";
   $("#btn-refrescar").style.display = nombre === "lista" ? "block" : "none";
+  $("#btn-nueva").style.display = nombre === "lista" ? "block" : "none";
   window.scrollTo(0, 0);
 }
 
@@ -370,17 +387,69 @@ async function abrirNoticia(id) {
     // Escribir el guion tarda; para cuando llega, el usuario puede haberse ido
     // a otra noticia o al vídeo ya hecho, y pisarle la pantalla sería peor.
     if (!sigueAbierta(id)) return;
-    guionActual = datos.guion;
-    $("#f-hook").value = guionActual.hook || "";
-    $("#f-cuerpo").value = guionActual.cuerpo || "";
-    $("#f-cierre").value = guionActual.cierre || "";
-    $("#f-hashtags").value = (guionActual.hashtags || []).join(" ");
-    $("#f-broll").value = (guionActual.broll || []).join(", ");
-    pintarMusica("musica-editor");
-    $("#btn-generar").disabled = false;
-    $("#btn-generar").textContent = actual.tiene_video ? "Rehacer el vídeo desde cero" : "Generar vídeo";
+    rellenarEditor(datos);
   } catch (e) {
     if (sigueAbierta(id)) $("#btn-generar").textContent = "Error: " + e.message;
+  }
+}
+
+function rellenarEditor(datos) {
+  guionActual = datos.guion;
+  $("#f-hook").value = guionActual.hook || "";
+  $("#f-cuerpo").value = guionActual.cuerpo || "";
+  $("#f-cierre").value = guionActual.cierre || "";
+  $("#f-hashtags").value = (guionActual.hashtags || []).join(" ");
+  $("#f-broll").value = (guionActual.broll || []).join(", ");
+  pintarMusica("musica-editor");
+  $("#btn-generar").disabled = false;
+  $("#btn-generar").textContent = actual.tiene_video ? "Rehacer el vídeo desde cero" : "Generar vídeo";
+}
+
+// --- Noticia escrita a mano: para contar algo que no está en los feeds ---
+function abrirManual() {
+  ["#m-titulo", "#m-texto", "#m-url"].forEach(s => $(s).value = "");
+  $("#error-manual").style.display = "none";
+  $("#btn-escribir-guion").disabled = false;
+  $("#btn-escribir-guion").textContent = "Escribir el guion";
+  pantalla("manual", "Noticia a mano", true);
+}
+
+async function escribirGuionManual() {
+  const titulo = $("#m-titulo").value.trim();
+  const boton = $("#btn-escribir-guion");
+  $("#error-manual").style.display = "none";
+  if (titulo.length < 10) {
+    $("#error-manual").textContent = "Escribe un titular un poco más largo.";
+    $("#error-manual").style.display = "block";
+    return;
+  }
+  boton.disabled = true;
+  boton.textContent = "Escribiendo el guion con Claude...";
+  try {
+    const r = await fetch("/api/noticia_manual", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ titulo, resumen: $("#m-texto").value.trim(), url: $("#m-url").value.trim() }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "No se pudo escribir el guion");
+    // pasa a formar parte del listado, como una noticia más
+    actual = {
+      id: d.id, titulo: d.titulo, fuente: d.fuente, url: d.url,
+      fecha: new Date().toISOString(), idioma: "es", resumen: "",
+      tiene_guion: true, tiene_video: false, manual: true,
+    };
+    noticias.unshift(actual);
+    musicaElegida = tituloMusica = creditoMusica = null;
+    volumenMusica = 0.20;
+    pantalla("editor", "Guion", true);
+    $("#editor-titulo").textContent = actual.titulo;
+    $("#btn-ver-video").style.display = "none";
+    rellenarEditor(d);
+  } catch (e) {
+    $("#error-manual").textContent = e.message;
+    $("#error-manual").style.display = "block";
+    boton.disabled = false;
+    boton.textContent = "Escribir el guion";
   }
 }
 
@@ -733,6 +802,8 @@ async function aplicarMusica() {
 
 $("#btn-buscar").onclick = buscarOpciones;
 $("#f-buscar").addEventListener("keydown", e => { if (e.key === "Enter") buscarOpciones(); });
+$("#btn-nueva").onclick = abrirManual;
+$("#btn-escribir-guion").onclick = escribirGuionManual;
 $("#filtro-fecha").onchange = pintarLista;
 $("#filtro-video").onchange = pintarLista;
 $("#btn-ver-video").onclick = verVideoExistente;
@@ -772,6 +843,7 @@ $("#btn-atras").onclick = () => {
   // desde los selectores se vuelve a donde estabas, no a la lista de noticias
   if (pantallaActual === "musica") volverDeMusica();
   else if (pantallaActual === "clips") pantalla("video", "Listo", true);
+  else if (pantallaActual === "manual") pantalla("lista", "Noticias", false);
   else pantalla("lista", "Noticias", false);
 };
 $("#btn-otra").onclick = () => { cargarNoticias(); pantalla("lista", "Noticias", false); };

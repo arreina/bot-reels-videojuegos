@@ -106,6 +106,24 @@ def _lanzar_traduccion(noticias: list[dict]) -> None:
     threading.Thread(target=tarea, daemon=True).start()
 
 
+MANUALES_PATH = Path("noticias_manuales.json")
+
+
+def _cargar_manuales() -> list[dict]:
+    """Noticias escritas a mano: no vienen de ningún feed, así que se guardan."""
+    if not MANUALES_PATH.is_file():
+        return []
+    try:
+        return json.loads(MANUALES_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+
+
+def _guardar_manuales(manuales: list[dict]) -> None:
+    MANUALES_PATH.write_text(json.dumps(manuales, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+
+
 @app.get("/api/noticias")
 def listar_noticias(refrescar: bool = False):
     """Noticias de los feeds, marcando cuáles ya se procesaron."""
@@ -114,7 +132,9 @@ def listar_noticias(refrescar: bool = False):
         if refrescar or caducada or not _cache["noticias"]:
             _cache["noticias"] = nr.leer_feeds()
             _cache["momento"] = time.time()
-        noticias = _cache["noticias"]
+        # las manuales van con las demás, ordenadas por fecha como el resto
+        noticias = sorted(_cargar_manuales() + _cache["noticias"],
+                          key=lambda n: n.get("fecha") or "", reverse=True)
 
     procesadas = set(nr.cargar_estado()["procesadas"])
     con_guion = {p.stem for p in nr.GUIONES_DIR.glob("*.json")} if nr.GUIONES_DIR.is_dir() else set()
@@ -144,6 +164,49 @@ def listar_noticias(refrescar: bool = False):
     return {"noticias": salida, "traduciendo": len(pendientes)}
 
 
+class NoticiaManual(BaseModel):
+    """Algo que el usuario quiere contar y que no sale en ningún feed."""
+    titulo: str
+    resumen: str = ""
+    url: str = ""
+
+
+@app.post("/api/noticia_manual")
+def crear_noticia_manual(datos: NoticiaManual):
+    """Da de alta una noticia escrita a mano y devuelve su guion."""
+    titulo = datos.titulo.strip()
+    if len(titulo) < 10:
+        raise HTTPException(400, "Escribe un titular un poco más largo")
+
+    # el id sale del título y del momento: dos noticias a mano no chocan
+    semilla = f"manual:{titulo}:{datetime.now(timezone.utc).isoformat()}"
+    noticia = {
+        "id": nr.id_noticia(semilla),
+        "fuente": "A mano",
+        "titulo": titulo,
+        "resumen": datos.resumen.strip(),
+        "url": datos.url.strip(),
+        "fecha": datetime.now(timezone.utc).isoformat(),
+        "idioma": "es",
+        "manual": True,
+    }
+    try:
+        guion = nr.generar_guion_cli(noticia)
+    except Exception as e:
+        raise HTTPException(502, f"No se pudo generar el guion: {e}")
+
+    manuales = _cargar_manuales()
+    manuales.insert(0, noticia)
+    _guardar_manuales(manuales)
+
+    guardado = {**{k: noticia[k] for k in ("id", "fuente", "titulo", "url")},
+                "generado": datetime.now(timezone.utc).isoformat(), "guion": guion}
+    nr.GUIONES_DIR.mkdir(exist_ok=True)
+    (nr.GUIONES_DIR / f"{noticia['id']}.json").write_text(
+        json.dumps(guardado, ensure_ascii=False, indent=2), encoding="utf-8")
+    return guardado
+
+
 @app.post("/api/guion/{noticia_id}")
 def crear_guion(noticia_id: str):
     """Genera el guion de una noticia con Claude (o devuelve el ya guardado)."""
@@ -158,6 +221,8 @@ def crear_guion(noticia_id: str):
             _cache["noticias"] = nr.leer_feeds()
             _cache["momento"] = time.time()
             noticia = next((n for n in _cache["noticias"] if n["id"] == noticia_id), None)
+    if noticia is None:
+        noticia = next((n for n in _cargar_manuales() if n["id"] == noticia_id), None)
     if noticia is None:
         raise HTTPException(404, "Esa noticia ya no está en los feeds; refresca la lista")
 
