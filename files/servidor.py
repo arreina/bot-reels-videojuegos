@@ -494,6 +494,25 @@ def elegir_clip(base_id: str, indice: int, eleccion: Eleccion):
     return listar_clips(base_id)
 
 
+@app.get("/api/reel/{base_id}")
+def reel_existente(base_id: str):
+    """Datos del vídeo ya montado de una noticia, para no tener que rehacerlo."""
+    ruta = gv.SALIDA_DIR / f"{Path(base_id).name}.mp4"
+    if not ruta.is_file():
+        raise HTTPException(404, "Esa noticia todavía no tiene vídeo")
+    try:
+        duracion = round(gv.duracion_audio(ruta), 1)
+    except (ValueError, OSError):
+        duracion = None
+    return {
+        # el sufijo evita que el navegador enseñe una versión vieja cacheada
+        "video": f"/videos/{ruta.name}?v={int(ruta.stat().st_mtime)}",
+        "duracion": duracion,
+        # sin la voz y el plan no se puede remontar: solo ver y compartir
+        "editable": (gv.TMP_DIR / f"{base_id}.wav").is_file() and bool(_cargar_plan(base_id)),
+    }
+
+
 @app.post("/api/remontar/{base_id}")
 def remontar(base_id: str):
     """Rehace el vídeo con los clips cambiados (sin volver a generar la voz)."""

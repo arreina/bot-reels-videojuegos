@@ -50,6 +50,14 @@
     background: var(--tarjeta); border: 1px solid var(--borde); color: var(--tenue); cursor: pointer;
   }
   .chip.activo { background: var(--acento); border-color: var(--acento); color: #fff; font-weight: 600; }
+  .filtros-extra { display: flex; gap: 8px; margin-bottom: 12px; }
+  .filtros-extra select {
+    flex: 1; min-width: 0; background: var(--tarjeta); color: var(--texto);
+    border: 1px solid var(--borde); border-radius: 999px; padding: 8px 12px;
+    font: inherit; font-size: 14px; cursor: pointer;
+  }
+  .filtros-extra select.activo { border-color: var(--acento); color: var(--acento-claro); }
+  .recuento { font-size: 12px; color: var(--tenue); margin: 0 0 10px; }
 
   .noticia {
     background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 14px;
@@ -143,12 +151,28 @@
   <!-- 1. Lista de noticias -->
   <section class="pantalla activa" id="pantalla-lista">
     <div class="filtros" id="filtros"></div>
+    <div class="filtros-extra">
+      <select id="filtro-fecha">
+        <option value="">📅 Cualquier fecha</option>
+        <option value="1">Últimas 24 h</option>
+        <option value="3">Últimos 3 días</option>
+        <option value="7">Última semana</option>
+        <option value="30">Último mes</option>
+      </select>
+      <select id="filtro-video">
+        <option value="">🎬 Con y sin vídeo</option>
+        <option value="si">Solo con vídeo</option>
+        <option value="no">Solo sin vídeo</option>
+        <option value="guion">Con guion escrito</option>
+      </select>
+    </div>
     <div id="lista"></div>
   </section>
 
   <!-- 2. Editor del guion -->
   <section class="pantalla" id="pantalla-editor">
     <p class="titulo-noticia" id="editor-titulo"></p>
+    <button class="boton secundario" id="btn-ver-video" style="display:none">▶ Ver el vídeo que ya hiciste</button>
     <label for="f-hook">Gancho</label>
     <textarea id="f-hook" rows="2"></textarea>
     <label for="f-cuerpo">Cuerpo</label>
@@ -200,11 +224,18 @@
     <div id="resultado" style="display:none">
       <video id="reproductor" controls playsinline></video>
 
-      <label>Música de fondo</label>
-      <div id="musica-resultado"></div>
+      <div id="bloque-edicion">
+        <label>Música de fondo</label>
+        <div id="musica-resultado"></div>
 
-      <label>Vídeos de fondo <span style="text-transform:none;letter-spacing:0">(se alternan cada 4 s)</span></label>
-      <div id="clips"></div>
+        <label>Vídeos de fondo <span style="text-transform:none;letter-spacing:0">(se alternan cada 4 s)</span></label>
+        <div id="clips"></div>
+      </div>
+      <div class="aviso" id="aviso-no-editable" style="display:none">
+        Este vídeo se generó en otra sesión y ya no están guardadas su voz ni su
+        lista de clips, así que no se pueden cambiar la música ni los fondos sin
+        rehacerlo. Puedes verlo y compartirlo, o volver atrás y regenerarlo.
+      </div>
       <button class="boton" id="btn-remontar" style="display:none;background:var(--ok);color:#0d2b1f">Aplicar cambios al vídeo</button>
 
       <button class="boton" id="btn-compartir" style="display:none">Compartir / Subir a Instagram</button>
@@ -265,11 +296,31 @@ function pintarFiltros() {
   });
 }
 
+// Los filtros de fecha y de vídeo se combinan con el de fuente
+function pasaFiltros(n) {
+  if (fuenteActiva !== "Todas" && n.fuente !== fuenteActiva) return false;
+  const dias = +$("#filtro-fecha").value;
+  if (dias) {
+    if (!n.fecha) return false;
+    if (Date.now() - new Date(n.fecha) > dias * 86400000) return false;
+  }
+  const estado = $("#filtro-video").value;
+  if (estado === "si" && !n.tiene_video) return false;
+  if (estado === "no" && n.tiene_video) return false;
+  if (estado === "guion" && !n.tiene_guion) return false;
+  return true;
+}
+
 function pintarLista() {
-  const vistas = noticias.filter(n => fuenteActiva === "Todas" || n.fuente === fuenteActiva).slice(0, 60);
+  const coinciden = noticias.filter(pasaFiltros);
+  const vistas = coinciden.slice(0, 60);
+  $("#filtro-fecha").classList.toggle("activo", !!$("#filtro-fecha").value);
+  $("#filtro-video").classList.toggle("activo", !!$("#filtro-video").value);
   const aviso = traduciendo > 0
     ? `<div class="ayuda" style="margin-bottom:10px">🌐 Traduciendo ${traduciendo} noticias al español...</div>` : "";
-  $("#lista").innerHTML = aviso + vistas.map(n => `
+  const recuento = `<p class="recuento">${coinciden.length} noticias${
+    coinciden.length > vistas.length ? ` (se enseñan las ${vistas.length} más recientes)` : ""}</p>`;
+  $("#lista").innerHTML = aviso + recuento + vistas.map(n => `
     <div class="noticia" data-id="${n.id}">
       <div class="meta">
         <span class="fuente">${BANDERAS[n.idioma] || ""} ${n.fuente}</span>
@@ -278,7 +329,9 @@ function pintarLista() {
       </div>
       <h3>${escapar(n.titulo)}</h3>
       <p>${escapar(n.resumen || "")}</p>
-    </div>`).join("") || '<div class="cargando">No hay noticias de esta fuente.</div>';
+    </div>`).join("");
+  if (!vistas.length) $("#lista").innerHTML = aviso +
+    '<div class="cargando">Ninguna noticia cumple esos filtros.</div>';
   $("#lista").querySelectorAll(".noticia").forEach(el => el.onclick = () => abrirNoticia(el.dataset.id));
 }
 
@@ -300,8 +353,15 @@ async function abrirNoticia(id) {
   pantalla("editor", "Guion", true);
   $("#editor-titulo").textContent = actual.titulo;
   ["#f-hook", "#f-cuerpo", "#f-cierre", "#f-hashtags", "#f-broll"].forEach(s => $(s).value = "");
+  // si ya hay vídeo hecho, se puede recuperar en vez de gastar otro montaje
+  $("#btn-ver-video").style.display = actual.tiene_video ? "block" : "none";
   $("#btn-generar").disabled = true;
   $("#btn-generar").textContent = "Escribiendo el guion con Claude...";
+  // Cada noticia arranca con su propia música: si no se limpia, se arrastra la
+  // de la anterior y el editor enseña una canción que no tiene nada que ver.
+  musicaElegida = tituloMusica = creditoMusica = null;
+  volumenMusica = 0.20;
+  if (actual.tiene_video) await recuperarMusicaDelVideo(id);
   try {
     const r = await fetch("/api/guion/" + id, { method: "POST" });
     if (!r.ok) throw new Error((await r.json()).detail);
@@ -314,9 +374,48 @@ async function abrirNoticia(id) {
     $("#f-broll").value = (guionActual.broll || []).join(", ");
     pintarMusica("musica-editor");
     $("#btn-generar").disabled = false;
-    $("#btn-generar").textContent = "Generar vídeo";
+    $("#btn-generar").textContent = actual.tiene_video ? "Rehacer el vídeo desde cero" : "Generar vídeo";
   } catch (e) {
     $("#btn-generar").textContent = "Error: " + e.message;
+  }
+}
+
+// Si la noticia ya tiene vídeo, el editor parte de la música que lleva puesta
+async function recuperarMusicaDelVideo(id) {
+  try {
+    const r = await fetch("/api/clips/" + id);
+    if (!r.ok) return;
+    const d = await r.json();
+    musicaElegida = d.musica;
+    tituloMusica = d.titulo_musica;
+    creditoMusica = d.credito_musica;
+    volumenMusica = d.volumen_musica;
+  } catch (e) { /* sin plan guardado se queda con los valores por defecto */ }
+}
+
+// Recupera el vídeo ya montado sin volver a generarlo (tarda un segundo,
+// frente al minuto largo que cuesta rehacer voz, clips y montaje).
+async function verVideoExistente() {
+  pantalla("video", "Listo", true);
+  $("#progreso").style.display = "none";
+  $("#error-video").style.display = "none";
+  $("#resultado").style.display = "block";
+  $("#btn-remontar").style.display = "none";
+  $("#aviso-no-editable").style.display = "none";
+  clipsCambiados.clear();
+  try {
+    const r = await fetch("/api/reel/" + actual.id);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "No se pudo abrir el vídeo");
+    mostrarVideo(d.video);
+    $("#bloque-edicion").style.display = d.editable ? "block" : "none";
+    $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
+    if (d.editable) cargarClips();
+  } catch (e) {
+    $("#resultado").style.display = "none";
+    $("#progreso").style.display = "block";
+    $("#error-video").textContent = e.message;
+    $("#error-video").style.display = "block";
   }
 }
 
@@ -355,16 +454,22 @@ async function seguir(trabajo) {
   }
   $("#progreso").style.display = "none";
   $("#resultado").style.display = "block";
-  $("#reproductor").src = t.video;
-  $("#btn-descargar").href = t.video;
+  $("#bloque-edicion").style.display = "block";
+  $("#aviso-no-editable").style.display = "none";
+  mostrarVideo(t.video);
+  cargarClips();
+}
+
+function mostrarVideo(url) {
+  $("#reproductor").src = url;
+  $("#btn-descargar").href = url;
   $("#titulo-pantalla").textContent = "Listo";
   // El menú de compartir de Android solo existe en contexto seguro (https)
   const puedeCompartir = window.isSecureContext && navigator.canShare &&
                          navigator.canShare({ files: [new File([""], "x.mp4", { type: "video/mp4" })] });
   $("#btn-compartir").style.display = puedeCompartir ? "block" : "none";
   $("#aviso-compartir").style.display = puedeCompartir ? "none" : "block";
-  $("#btn-compartir").onclick = () => compartir(t.video);
-  cargarClips();
+  $("#btn-compartir").onclick = () => compartir(url);
 }
 
 // --- Clips de fondo: se pueden cambiar uno a uno sin tocar los demás ---
@@ -608,6 +713,9 @@ async function aplicarMusica() {
 
 $("#btn-buscar").onclick = buscarOpciones;
 $("#f-buscar").addEventListener("keydown", e => { if (e.key === "Enter") buscarOpciones(); });
+$("#filtro-fecha").onchange = pintarLista;
+$("#filtro-video").onchange = pintarLista;
+$("#btn-ver-video").onclick = verVideoExistente;
 $("#btn-buscar-musica").onclick = buscarCanciones;
 $("#f-musica").addEventListener("keydown", e => { if (e.key === "Enter") buscarCanciones(); });
 
