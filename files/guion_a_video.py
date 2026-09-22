@@ -92,6 +92,9 @@ BROLL_TERMINOS_DEFECTO = ["gaming setup neon", "video game controller", "esports
 
 CLIPS_MINIMOS = 3
 CLIPS_MAXIMOS = 15  # tope para no descargar cientos de megas en vídeos largos
+# Un clip de stock son 5-25 MB: con una conexión normal no llega al minuto. Si
+# pasa de aquí es que la fuente está estrangulando y hay que probar con otra.
+SEGUNDOS_MAXIMOS_POR_CLIP = 90
 
 
 def clips_necesarios(duracion: float) -> int:
@@ -287,10 +290,20 @@ def descargar_candidato(candidato: dict) -> Path | None:
     try:
         with requests.get(candidato["enlace"], stream=True, timeout=120) as descarga:
             descarga.raise_for_status()
+            limite = time.monotonic() + SEGUNDOS_MAXIMOS_POR_CLIP
             with open(ruta, "wb") as fh:
                 for trozo in descarga.iter_content(chunk_size=1 << 20):
                     fh.write(trozo)
-    except requests.RequestException as e:
+                    # El timeout de requests es por lectura, no total: si el
+                    # banco estrangula la conexión a unos pocos B/s (Pexels lo
+                    # hace cuando le pides mucho en poco rato) nunca salta y el
+                    # vídeo se queda "generando" para siempre. Mejor abandonar
+                    # este clip y probar con otro candidato.
+                    if time.monotonic() > limite:
+                        raise TimeoutError(
+                            f"tarda más de {SEGUNDOS_MAXIMOS_POR_CLIP} s "
+                            f"(el banco va a {fh.tell() / SEGUNDOS_MAXIMOS_POR_CLIP / 1024:.0f} kB/s)")
+    except (requests.RequestException, TimeoutError, OSError) as e:
         print(f"  [aviso] No se pudo descargar el clip {candidato['id']}: {e}")
         ruta.unlink(missing_ok=True)
         return None

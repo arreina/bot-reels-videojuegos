@@ -654,6 +654,10 @@ $("#btn-generar").onclick = async () => {
     cierre: $("#f-cierre").value.trim(),
     hashtags: $("#f-hashtags").value.split(/[\s,]+/).filter(Boolean),
     broll: $("#f-broll").value.split(",").map(s => s.trim()).filter(Boolean),
+    // No se edita en ningún campo, pero hay que devolverlo: es lo que dice de
+    // qué juego buscar imágenes reales. Si no viaja, el servidor lo recibe
+    // vacío y el fondo cae a stock genérico sin decir por qué.
+    material: (guionActual && guionActual.material) || {},
     musica: musicaElegida,
     volumen_musica: volumenMusica,
   };
