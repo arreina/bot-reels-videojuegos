@@ -402,7 +402,7 @@ async function abrirNoticia(id) {
   $("#btn-generar").textContent = "Escribiendo el guion con Claude...";
   // Cada noticia arranca con su propia música: si no se limpia, se arrastra la
   // de la anterior y el editor enseña una canción que no tiene nada que ver.
-  musicaElegida = tituloMusica = creditoMusica = null;
+  musicaElegida = tituloMusica = creditoMusica = creditoImagenes = null;
   volumenMusica = 0.20;
   if (actual.tiene_video) await recuperarMusicaDelVideo(id);
   try {
@@ -468,6 +468,7 @@ function abrirDeGaleria(v) {
   actual = { ...(noticias.find(n => n.id === v.id) || {}), id: v.id, titulo: v.titulo };
   musicaElegida = tituloMusica = null;
   creditoMusica = v.credito_musica;
+  creditoImagenes = v.credito_imagenes;
   origenVideo = "galeria";
   verVideoExistente();
 }
@@ -527,7 +528,7 @@ async function escribirGuionManual() {
     };
     if (anterior) noticias[noticias.indexOf(anterior)] = actual;
     else noticias.unshift(actual);
-    musicaElegida = tituloMusica = creditoMusica = null;
+    musicaElegida = tituloMusica = creditoMusica = creditoImagenes = null;
     volumenMusica = 0.20;
     if (actual.tiene_video) await recuperarMusicaDelVideo(actual.id);
     pantalla("editor", "Guion", true);
@@ -598,6 +599,7 @@ async function recuperarMusicaDelVideo(id) {
     musicaElegida = d.musica;
     tituloMusica = d.titulo_musica;
     creditoMusica = d.credito_musica;
+    creditoImagenes = d.credito_imagenes;
     volumenMusica = d.volumen_musica;
   } catch (e) { /* sin plan guardado se queda con los valores por defecto */ }
 }
@@ -630,8 +632,9 @@ async function verVideoExistente() {
     $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
     // sin bloque de música, el crédito se enseña suelto: hay que ponerlo al subirlo
     const suelto = $("#credito-suelto");
-    suelto.textContent = creditoMusica ? "📋 " + creditoMusica : "";
-    suelto.style.display = !d.editable && creditoMusica ? "block" : "none";
+    const creditos = [creditoImagenes, creditoMusica].filter(Boolean);
+    suelto.textContent = creditos.length ? "📋 " + creditos.join(" · ") : "";
+    suelto.style.display = !d.editable && creditos.length ? "block" : "none";
     if (d.editable) cargarClips();
   } catch (e) {
     $("#resultado").style.display = "none";
@@ -717,6 +720,7 @@ async function cargarClips() {
     tituloMusica = d.titulo_musica;
     volumenMusica = d.volumen_musica;
     creditoMusica = d.credito_musica;
+    creditoImagenes = d.credito_imagenes;
     pintarMusica("musica-resultado");
     pintarClips(d.clips);
   } catch (e) { $("#clips").innerHTML = ""; }
@@ -724,15 +728,23 @@ async function cargarClips() {
 
 function pintarClips(clips) {
   clipsActuales = clips;
+  // Un clip real lleva el nombre del trailer del que sale y de quién es; uno
+  // de stock, las palabras con las que se buscó.
   $("#clips").innerHTML = clips.map((c, i) => `
     <div class="clip ${clipsCambiados.has(i) ? "cambiado" : ""}">
       ${c.miniatura ? `<img src="${c.miniatura}" alt="">` : '<img alt="">'}
       <div class="datos">
-        <div class="termino">${escapar(c.termino || "clip de fondo")}</div>
-        <div class="autor">${c.autor ? "de " + escapar(c.autor) : ""}</div>
+        <div class="termino">${escapar(
+          (c.tipo === "real" && c.titulo_origen) || c.termino || "clip de fondo")}</div>
+        <div class="autor">${c.credito
+          ? "🎬 " + escapar(c.credito)
+          : (c.autor ? "de " + escapar(c.autor) : "")}</div>
       </div>
       <button data-i="${i}">Cambiar</button>
-    </div>`).join("");
+    </div>`).join("")
+    + (creditoImagenes
+      ? `<div class="ayuda" style="margin-top:8px">📋 ${escapar(creditoImagenes)} — va en el vídeo y también en la descripción</div>`
+      : "");
   $("#clips").querySelectorAll("button").forEach(b => b.onclick = () => cambiarClip(+b.dataset.i));
 }
 
@@ -795,6 +807,9 @@ async function elegirOpcion(candidato, el) {
 // --- Música de fondo: pista y volumen, tanto antes como después de generar ---
 let musicaElegida = null, tituloMusica = null, volumenMusica = 0.20,
     creditoMusica = null, contenedorMusica = "musica-editor";
+// Atribución del material real del fondo ("Imágenes: PlayStation"): va
+// sobreimpresa en el vídeo y además hay que ponerla en la descripción.
+let creditoImagenes = null;
 
 // Ojo: hay dos bloques de música a la vez (editor y resultado). Nada de id=,
 // o querySelector devolvería siempre el del editor y el otro quedaría muerto.

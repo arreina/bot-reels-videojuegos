@@ -17,7 +17,6 @@ al arrancar (ej. http://192.168.1.40:8000) y añádela a la pantalla de inicio.
 """
 
 import json
-import math
 import os
 import random
 import socket
@@ -35,6 +34,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import guion_a_video as gv
+import material_real as mr
 import noticias_reel as nr
 
 PUERTO = 8000        # http: siempre disponible, para ver y descargar
@@ -65,6 +65,10 @@ class GuionEditado(BaseModel):
     cierre: str
     hashtags: list[str] = []
     broll: list[str] = []
+    # de qué juego/marca buscar imágenes reales; lo escribe el guionista y el
+    # móvil lo devuelve tal cual (si se perdiera aquí, el fondo volvería a ser
+    # stock genérico sin que se note por qué)
+    material: dict = {}
     musica: str | None = None          # nombre del archivo, o None para aleatoria
     volumen_musica: float = gv.MUSICA_VOLUMEN
 
@@ -300,16 +304,6 @@ def crear_guion(noticia_id: str):
     return datos
 
 
-CLIPS_MINIMOS = 3
-CLIPS_MAXIMOS = 15  # tope para no descargar cientos de megas en vídeos largos
-
-
-def _clips_necesarios(duracion: float) -> int:
-    """Un clip distinto por corte, para que no se repitan en vídeos largos."""
-    cortes = math.ceil(duracion / gv.SEGUNDOS_POR_CORTE)
-    return max(CLIPS_MINIMOS, min(cortes, CLIPS_MAXIMOS))
-
-
 def _descargar_varios(candidatos: list[dict], cuantos: int) -> list[dict]:
     """Descarga en paralelo hasta reunir 'cuantos' clips, respetando el orden."""
     elegidos, pendientes = [], list(candidatos)
@@ -515,16 +509,31 @@ def _producir_video(trabajo_id: str, datos: dict) -> None:
         dur = gv.duracion_audio(audio_wav)
         gv.generar_srt(guion, dur, srt_path)
 
-        cuantos = _clips_necesarios(dur)
-        paso(f"Buscando {cuantos} vídeos de fondo...", 45)
+        cuantos = gv.clips_necesarios(dur)
         terminos = guion.get("broll") or gv.BROLL_TERMINOS_DEFECTO
         pista = _elegir_musica(datos.get("musica"))
         plan = {"terminos": terminos, "candidatos": [], "usados": [],
                 "musica": str(pista) if pista else None,
                 "volumen_musica": datos.get("volumen_musica", gv.MUSICA_VOLUMEN)}
-        plan["candidatos"] = gv.buscar_candidatos(terminos)
-        elegidos = _descargar_varios(_repartir_por_termino(plan["candidatos"]), cuantos)
-        plan["usados"] = [c["id"] for c in elegidos]
+
+        # 1º imágenes reales de eso mismo: trailers del juego o de la marca
+        material = guion.get("material") or {}
+        cortes_reales = []
+        if material:
+            tema = material.get("juego") or material.get("empresa") or "la noticia"
+            paso(f"Buscando imágenes de «{tema}»...", 40)
+            cortes_reales = mr.conseguir_clips(material, cuantos)
+            plan["candidatos"] += cortes_reales
+            plan["usados"] = [c["id"] for c in cortes_reales]
+
+        # 2º lo que falte, con stock libre
+        if len(plan["usados"]) < cuantos:
+            faltan = cuantos - len(plan["usados"])
+            paso(f"Completando con {faltan} vídeos de stock...", 50)
+            stock = gv.buscar_candidatos(terminos)
+            plan["candidatos"] += stock
+            elegidos = _descargar_varios(_repartir_por_termino(stock), faltan)
+            plan["usados"] += [c["id"] for c in elegidos]
         _guardar_plan(base_id, plan)
 
         paso("Montando el vídeo...", 60)
@@ -567,6 +576,10 @@ def listar_clips(base_id: str):
             "termino": info.get("termino", ""),
             "autor": info.get("autor", ""),
             "miniatura": f"/miniaturas/{mini.name}" if mini else None,
+            "tipo": info.get("tipo", "stock"),
+            "credito": info.get("credito", ""),
+            "fuente": info.get("fuente", ""),
+            "titulo_origen": info.get("titulo", ""),
         })
     disponibles = len(por_id) - len(plan.get("usados", []))
     nombre_musica = Path(plan["musica"]).name if plan.get("musica") else None
@@ -577,28 +590,53 @@ def listar_clips(base_id: str):
         "musica": nombre_musica,
         "titulo_musica": credito.get("titulo"),
         "volumen_musica": plan.get("volumen_musica", gv.MUSICA_VOLUMEN),
-        # texto que habrá que poner en la descripción al publicar
+        # textos que habrá que poner en la descripción al publicar
         "credito_musica": credito.get("texto"),
+        "credito_imagenes": _credito_imagenes(plan),
     }
 
 
+def _credito_imagenes(plan: dict) -> str | None:
+    """
+    Atribución del material real que se ve en el vídeo, sin repetir dueños.
+    Devuelve None si el fondo es todo stock libre, que no la necesita.
+    """
+    en_uso = set(plan.get("usados", []))
+    duenos = list(dict.fromkeys(
+        c["credito"] for c in plan.get("candidatos", [])
+        if c.get("credito") and c["id"] in en_uso))
+    return f"Imágenes: {', '.join(duenos)}" if duenos else None
+
+
 @app.get("/api/buscar_clips")
-def buscar_clips(q: str):
+def buscar_clips(q: str, solo_stock: bool = False):
     """Busca vídeos de fondo en todas las fuentes y devuelve las miniaturas.
 
-    No descarga nada: sirve para que el usuario vea las opciones y elija.
+    Primero material real (trailers del juego o de la marca) y después stock
+    libre. No descarga nada: sirve para que el usuario vea las opciones y elija.
     """
-    if not q.strip():
+    q = q.strip()
+    if not q:
         raise HTTPException(400, "Escribe algo que buscar")
-    candidatos = gv.buscar_candidatos([q.strip()], por_termino=24)
-    if not candidatos and not (os.environ.get("PEXELS_API_KEY") or
-                               os.environ.get("PIXABAY_API_KEY")):
+
+    reales = [] if solo_stock else mr.buscar_material({"juego": q, "busquedas": [q]})
+    stock = gv.buscar_candidatos([q], por_termino=24)
+    if not reales and not stock and not (os.environ.get("PEXELS_API_KEY") or
+                                         os.environ.get("PIXABAY_API_KEY")):
         raise HTTPException(400, "No hay ninguna clave de banco de vídeos configurada")
-    return {"opciones": [c for c in candidatos if c.get("imagen")]}
+    return {"opciones": [c for c in reales + stock if c.get("imagen")]}
 
 
 class Eleccion(BaseModel):
     candidato: dict
+
+
+def _momentos_usados(plan: dict, id_trailer: str) -> list[float]:
+    """Segundos del trailer que ya están en el vídeo, para no repetir escena."""
+    en_uso = set(plan.get("usados", []))
+    return [c["inicio"] for c in plan.get("candidatos", [])
+            if c.get("inicio") is not None and c["id"] in en_uso
+            and c["id"].rsplit("_", 1)[0] == id_trailer]
 
 
 @app.post("/api/clips/{base_id}/elegir/{indice}")
@@ -611,7 +649,15 @@ def elegir_clip(base_id: str, indice: int, eleccion: Eleccion):
     candidato = eleccion.candidato
     if not candidato.get("enlace") or "id" not in candidato:
         raise HTTPException(400, "Candidato incompleto")
-    if not gv.descargar_candidato(candidato):
+
+    if candidato.get("tipo") == "real" and "inicio" not in candidato:
+        # de la rejilla llega el trailer entero, no un trozo: se corta uno, y
+        # uno distinto cada vez que se vuelva a elegir el mismo trailer
+        corte = mr.corte_suelto(candidato, evitar=_momentos_usados(plan, candidato["id"]))
+        if not corte:
+            raise HTTPException(502, "No se pudo sacar un trozo de ese vídeo")
+        candidato = corte
+    elif not gv.descargar_candidato(candidato):
         raise HTTPException(502, "No se pudo descargar ese vídeo")
 
     plan["usados"][indice] = candidato["id"]
@@ -695,8 +741,9 @@ def galeria():
             "duracion": _duracion_cacheada(ruta, momento),
             "tamano": datos.st_size,
             "editable": (gv.TMP_DIR / f"{base_id}.wav").is_file() and bool(plan),
-            # el crédito hay que ponerlo en la descripción al resubirlo
+            # los créditos hay que ponerlos en la descripción al resubirlo
             "credito_musica": creditos.get(pista, {}).get("texto"),
+            "credito_imagenes": _credito_imagenes(plan),
         })
     videos.sort(key=lambda v: v["fecha"], reverse=True)
     return {"videos": videos, "espacio": espacio}
@@ -745,7 +792,8 @@ def crear_video(g: GuionEditado):
         "id": g.id, "fuente": g.fuente, "titulo": g.titulo, "url": g.url,
         "generado": datetime.now(timezone.utc).isoformat(),
         "guion": {"hook": g.hook, "cuerpo": g.cuerpo, "cierre": g.cierre,
-                  "hashtags": g.hashtags, "broll": g.broll},
+                  "hashtags": g.hashtags, "broll": g.broll,
+                  "material": g.material},
         "musica": g.musica,
         "volumen_musica": max(0.0, min(g.volumen_musica, 1.0)),
     }

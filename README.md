@@ -19,7 +19,8 @@ Dos criterios de diseño que atraviesan todo el proyecto:
 | Módulo | Fichero | Qué hace |
 | --- | --- | --- |
 | 1 | `files/noticias_reel.py` | Lee 10 feeds RSS (español, inglés y japonés), quita duplicados, traduce los titulares japoneses y escribe el guion en `guiones/<id>.json`. También se puede escribir una noticia a mano desde el móvil (botón **+**), que se guarda en `noticias_manuales.json` y aparece en el listado como una más. |
-| 2 | `files/guion_a_video.py` | Locuta el guion con Piper, busca B-roll acorde a la noticia, busca música en bancos libres, la mezcla con ducking, quema subtítulos y monta el mp4 con FFmpeg. |
+| 2 | `files/guion_a_video.py` | Locuta el guion con Piper, monta el fondo con el material que encuentra `material_real.py` (y stock libre para lo que falte), busca música en bancos libres, la mezcla con ducking, quema subtítulos y créditos y monta el mp4 con FFmpeg. |
+| 2b | `files/material_real.py` | Busca imágenes REALES de la noticia: trailers oficiales del juego o de la marca en YouTube y en las fichas de Steam, los descarga con yt-dlp y los trocea en cortes de 4 s. |
 | 4 | `files/servidor.py` + `files/web/index.html` | Interfaz móvil (FastAPI): listado de noticias con filtros, editor de guion, generación, buscador de clips, buscador de música y volumen, galería de vídeos ya montados y compartir nativo a Instagram/WhatsApp/Telegram. |
 | 3 | *pendiente* | Publicación en YouTube Shorts / TikTok con las APIs oficiales, con aprobación manual antes de cada subida e inserción automática de la atribución de la música. |
 
@@ -56,6 +57,35 @@ cp files/.env.ejemplo files/.env   # y rellena PEXELS_API_KEY / PIXABAY_API_KEY
 #    libres y la cachea en files/musica_cache/ sobre la marcha.
 ./descargar_musica.sh
 ```
+
+### De dónde sale el vídeo de fondo
+
+Si la noticia habla de Final Fantasy XVI, el fondo es Final Fantasy XVI. El
+guionista escribe en el guion un bloque `material` con el juego, la empresa y
+dos o tres búsquedas en inglés, y `material_real.py` recorre esta escalera:
+
+1. **Canal oficial de la marca en YouTube** (PlayStation, Nintendo, Square
+   Enix…). Además de una lista fija de canales, se acepta como oficial
+   cualquier canal que lleve el nombre de la empresa de la noticia: hay miles
+   de estudios y no caben todos en una constante.
+2. **La ficha del juego en Steam**, que no pide clave de API.
+3. **Medios especializados** (IGN, GameSpot, Vandal…), que replican los mismos
+   trailers con su marca de agua.
+4. **Stock libre** (Pexels/Pixabay) para lo que falte, como hasta ahora.
+
+De cada trailer se sacan cortes repartidos a lo largo del vídeo, saltándose los
+logos del principio, la pantalla final y los fundidos a negro (se mide el brillo
+del fotograma antes de cortar).
+
+**Esto sí tiene copyright**, al revés que el stock. Se usa como lo usan los
+medios: cortes de cuatro segundos, la locución por encima y el crédito
+sobreimpreso arriba a la derecha ("Imágenes: PlayStation"), que sale
+automáticamente del canal del que se bajó cada clip. La interfaz también enseña
+el texto completo para la descripción al publicar. Aun así, YouTube puede
+meterle un Content ID que desvíe la monetización al editor, e Instagram puede
+silenciar el audio; y descargar de YouTube va contra sus condiciones de
+servicio, aunque el uso posterior sea informativo. Si no lo quieres,
+`guion_a_video.py --solo-stock` vuelve al comportamiento de antes.
 
 ### De dónde sale la música
 
@@ -118,15 +148,27 @@ cd files
 - **Las búsquedas de música exigen que aparezcan todas las palabras**, en las
   dos fuentes. "upbeat electronic" devuelve cero. Si una búsqueda de varias
   palabras se queda corta, `buscar_musica()` reintenta palabra por palabra.
+- **El `yt-dlp` del sistema no sirve.** El de Mint (2024.04.09) solo devuelve
+  storyboards de YouTube: hay que usar el del venv y actualizarlo de vez en
+  cuando, porque YouTube rompe las versiones viejas.
+- **Nuestro ffmpeg estático se rompe (segfault) con los HLS de Steam.** Por eso
+  los trailers los baja siempre yt-dlp, incluso los de Steam.
+- **Este ffmpeg no trae `drawtext`** aunque esté compilado con freetype. El
+  crédito del material va por un segundo filtro `subtitles`, no por drawtext.
+- **En `force_style`, `Alignment` usa la numeración vieja de SSA**, no la de
+  ASS: 7 es arriba a la derecha y 9 deja el rótulo a media altura y pegado a la
+  izquierda, encima de la cara del personaje.
 - **Sharvard se come la L de los grupos consonánticos** ("público" → "púbico"):
   `files/pronunciaciones.json` reescribe esas palabras ("pú-blico") solo para el
   TTS, nunca para los subtítulos.
 
 ## Licencias
 
-El código es tuyo; el material que descarga, no. Los clips de Pexels y Pixabay
-permiten uso comercial sin atribución, pero **casi toda la música es CC BY y la
-atribución es obligatoria**: al descargar una pista se guarda su crédito exacto
+El código es tuyo; el material que descarga, no. Los trailers son propiedad de
+su editor y se usan a título de cita informativa, con el crédito en pantalla y
+en la descripción (ver "De dónde sale el vídeo de fondo"). Los clips de Pexels y
+Pixabay permiten uso comercial sin atribución, pero **casi toda la música es
+CC BY y la atribución es obligatoria**: al descargar una pista se guarda su crédito exacto
 en `files/musica_cache/creditos.json` (o `files/musica/creditos.json` para las
 locales), la interfaz lo enseña bajo el selector y debe acabar en la descripción
 del vídeo publicado. El Módulo 3 lo insertará automáticamente al subirlo.

@@ -36,6 +36,8 @@ from urllib.parse import quote, urlparse
 
 import requests
 
+import material_real
+
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 
 
@@ -87,6 +89,15 @@ SEGUNDOS_POR_CORTE = 4.0  # duración de cada corte de B-roll en el fondo
 
 # Términos de respaldo si el guion no trae "broll" (guiones antiguos)
 BROLL_TERMINOS_DEFECTO = ["gaming setup neon", "video game controller", "esports"]
+
+CLIPS_MINIMOS = 3
+CLIPS_MAXIMOS = 15  # tope para no descargar cientos de megas en vídeos largos
+
+
+def clips_necesarios(duracion: float) -> int:
+    """Un clip distinto por corte, para que no se repitan en vídeos largos."""
+    cortes = math.ceil(duracion / SEGUNDOS_POR_CORTE)
+    return max(CLIPS_MINIMOS, min(cortes, CLIPS_MAXIMOS))
 
 
 def construir_texto(guion: dict) -> str:
@@ -262,6 +273,10 @@ def ruta_de_clip(clip_id) -> Path:
 
 def descargar_candidato(candidato: dict) -> Path | None:
     """Descarga un clip del banco a la caché local (o lo reutiliza si ya está)."""
+    if candidato.get("tipo") == "real":
+        # no es un clip suelto sino un trozo de un trailer: material_real.py
+        # se encarga de bajar el trailer y recortar el fragmento
+        return material_real.materializar(candidato)
     if urlparse(candidato["enlace"]).hostname not in DOMINIOS_PERMITIDOS:
         print(f"  [aviso] Enlace de origen no permitido: {candidato['enlace'][:60]}")
         return None
@@ -611,6 +626,13 @@ def planificar_cortes(clips: list[tuple[str, float]], duracion_total: float) -> 
     return cortes
 
 
+def _tiempo_srt(seg: float) -> str:
+    h = int(seg // 3600)
+    m = int((seg % 3600) // 60)
+    s = seg % 60
+    return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
+
+
 def generar_srt(guion: dict, duracion_total: float, salida_srt: Path) -> None:
     """
     Genera subtítulos muy simples: reparte hook/cuerpo/cierre en el tiempo
@@ -630,21 +652,49 @@ def generar_srt(guion: dict, duracion_total: float, salida_srt: Path) -> None:
 
     total_chars = sum(len(f) for f in fragmentos) or 1
 
-    def fmt_tiempo(seg: float) -> str:
-        h = int(seg // 3600)
-        m = int((seg % 3600) // 60)
-        s = seg % 60
-        return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
-
     lineas = []
     t_actual = 0.0
     for i, fragmento in enumerate(fragmentos, start=1):
         dur = duracion_total * (len(fragmento) / total_chars)
         inicio, fin = t_actual, t_actual + dur
-        lineas.append(f"{i}\n{fmt_tiempo(inicio)} --> {fmt_tiempo(fin)}\n{fragmento}\n")
+        lineas.append(f"{i}\n{_tiempo_srt(inicio)} --> {_tiempo_srt(fin)}\n{fragmento}\n")
         t_actual = fin
 
     salida_srt.write_text("\n".join(lineas), encoding="utf-8")
+
+
+def generar_srt_creditos(cortes: list[tuple[str, float]], salida_srt: Path) -> bool:
+    """
+    Subtítulo aparte con el crédito del material que se ve en cada momento
+    ("Imágenes: PlayStation"). Los trailers son material del editor y hay que
+    acreditarlos; el stock libre no lo necesita y no lleva nada.
+
+    Devuelve False si no hay nada que acreditar (todo el fondo es stock).
+    """
+    creditos = material_real.creditos_guardados()
+    tramos: list[list] = []
+    t = 0.0
+    for ruta, dur_corte in cortes:
+        credito = (creditos.get(Path(ruta).name) or {}).get("credito", "")
+        # varios cortes seguidos del mismo dueño son un solo rótulo continuo,
+        # si no el texto parpadearía cada cuatro segundos
+        if tramos and tramos[-1][2] == credito:
+            tramos[-1][1] = t + dur_corte
+        else:
+            tramos.append([t, t + dur_corte, credito])
+        t += dur_corte
+
+    lineas, n = [], 0
+    for inicio, fin, credito in tramos:
+        if not credito:
+            continue
+        n += 1
+        lineas.append(f"{n}\n{_tiempo_srt(inicio)} --> {_tiempo_srt(fin)}\n"
+                      f"Imágenes: {credito}\n")
+    if not lineas:
+        return False
+    salida_srt.write_text("\n".join(lineas), encoding="utf-8")
+    return True
 
 
 def montar_video(audio_wav: Path, srt: Path, salida_mp4: Path, duracion: float,
@@ -667,10 +717,25 @@ def montar_video(audio_wav: Path, srt: Path, salida_mp4: Path, duracion: float,
         "Outline=1,Shadow=0,Alignment=2,MarginV=50,MarginL=40,MarginR=40'"
     )
 
+    # Rótulo de autoría del material real, arriba a la derecha y discreto. El
+    # stock libre no lo necesita, así que si el fondo es todo stock no sale.
+    filtro_creditos = ""
+
     cmd = [FFMPEG, "-y"]
 
     if clips:
         cortes = planificar_cortes(clips, duracion)
+        srt_creditos = srt.with_name(f"{srt.stem}_creditos.srt")
+        if generar_srt_creditos(cortes, srt_creditos):
+            filtro_creditos = (
+                f"subtitles={srt_creditos}:force_style="
+                "'FontName=Arial,FontSize=8,PrimaryColour=&H30FFFFFF&,"
+                "OutlineColour=&H90000000&,BorderStyle=1,Outline=1,Shadow=0,"
+                # OJO: aquí Alignment va en la numeración vieja de SSA, no en la
+                # de ASS. 7 es arriba a la derecha; 9 deja el rótulo a media
+                # altura y pegado a la izquierda, encima de la cara.
+                "Alignment=7,MarginV=45,MarginR=32',"
+            )
         for ruta, _ in cortes:
             cmd += ["-i", ruta]
         idx_audio = len(cortes)
@@ -734,7 +799,7 @@ def montar_video(audio_wav: Path, srt: Path, salida_mp4: Path, duracion: float,
         f"[bg][wave]overlay=x=0:y=(H-h)/2+250:format=auto,"
         # yuv420p es OBLIGATORIO: el overlay con transparencia deja el vídeo en
         # yuv444p (perfil High 4:4:4) y ningún móvil ni Instagram sabe abrirlo.
-        f"{filtro_subs},format=yuv420p[outv]"
+        f"{filtro_creditos}{filtro_subs},format=yuv420p[outv]"
     )
 
     # Ajustes exigidos por Instagram, TikTok y YouTube Shorts: H.264 perfil alto
@@ -762,6 +827,8 @@ def main():
     parser.add_argument("--broll-dir", help="Carpeta con clips propios para el fondo (en vez de Pexels)")
     parser.add_argument("--sin-broll", action="store_true",
                         help="Fuerza el fondo de gradiente procedural")
+    parser.add_argument("--solo-stock", action="store_true",
+                        help="No busca trailers del juego: solo vídeo de stock libre")
     parser.add_argument("--musica", help="Archivo de música concreto, o términos a buscar "
                                          "en el banco libre (por defecto: ambiente al azar)")
     parser.add_argument("--musica-local", action="store_true",
@@ -793,20 +860,32 @@ def main():
     print("[3/4] Preparando fondo de B-roll...")
     clips = None
     if not args.sin_broll:
+        # un clip por corte: si no, en vídeos largos se repiten
+        cuantos = clips_necesarios(dur)
+        rutas = []
         if args.broll_dir:
             rutas = sorted(
                 p for p in Path(args.broll_dir).iterdir()
                 if p.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}
             )
-        elif os.environ.get("PEXELS_API_KEY"):
-            terminos = guion.get("broll") or BROLL_TERMINOS_DEFECTO
-            # un clip por corte: si no, en vídeos largos se repiten
-            cuantos = max(3, min(math.ceil(dur / SEGUNDOS_POR_CORTE), 15))
-            print(f"  Buscando {cuantos} clips en Pexels: {', '.join(terminos)}")
-            rutas = descargar_broll_pexels(terminos, os.environ["PEXELS_API_KEY"], max_clips=cuantos)
         else:
-            rutas = []
-            print("  [aviso] Sin PEXELS_API_KEY ni --broll-dir: se usará el fondo de gradiente.")
+            # 1º material real de la noticia (trailers del juego o de la marca)
+            material = guion.get("material") or {}
+            if material and not args.solo_stock:
+                tema = material.get("juego") or material.get("empresa") or "la noticia"
+                print(f"  Buscando material real de «{tema}»...")
+                cortes = material_real.conseguir_clips(material, cuantos)
+                rutas = [material_real.ruta_de_corte(c["id"]) for c in cortes]
+            # 2º lo que falte, con stock libre como hasta ahora
+            if len(rutas) < cuantos and os.environ.get("PEXELS_API_KEY"):
+                faltan = cuantos - len(rutas)
+                terminos = guion.get("broll") or BROLL_TERMINOS_DEFECTO
+                verbo = "Completando con" if rutas else "Buscando"
+                print(f"  {verbo} {faltan} clips de stock: {', '.join(terminos)}")
+                rutas += descargar_broll_pexels(terminos, os.environ["PEXELS_API_KEY"],
+                                                max_clips=faltan)
+            if not rutas:
+                print("  [aviso] Sin material ni PEXELS_API_KEY: se usará el fondo de gradiente.")
         clips = preparar_clips(rutas) or None
         if rutas and not clips:
             print("  [aviso] Ningún clip utilizable: se usará el fondo de gradiente.")

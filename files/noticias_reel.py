@@ -88,10 +88,14 @@ Otras reglas ESTRICTAS:
 - cuerpo: 2-4 frases con lo esencial de la noticia.
 - cierre: 1 frase de remate, con una llamada a la acción suave (ej. invitar a opinar en comentarios).
 - hashtags: 4-6, mezclando genéricos (#videojuegos #gaming) y específicos del juego/tema, sin espacios.
-- broll: 3-5 términos de búsqueda EN INGLÉS para encontrar vídeos de stock genéricos que acompañen la noticia (ej. "video game controller", "esports arena", "game developer office"). Deben ser conceptos genéricos: NUNCA nombres de juegos, personajes ni marcas (ese material tiene copyright y no existe como stock libre).
+- material: de qué va la noticia, para poder poner de fondo imágenes REALES del juego o de la marca en vez de vídeo genérico. Es un objeto con tres campos:
+    - juego: el título exacto y oficial del juego protagonista, tal como se le conoce en occidente ("Final Fantasy XVI", "The Legend of Zelda: Tears of the Kingdom"). Cadena vacía si la noticia no va de un juego concreto.
+    - empresa: la compañía o estudio protagonista ("Square Enix", "Sony", "Nintendo", "Larian Studios"). Cadena vacía si no hay ninguna clara.
+    - busquedas: 2 o 3 búsquedas EN INGLÉS, de más específica a menos, para encontrar en YouTube el vídeo oficial de eso ("Final Fantasy XVI launch trailer", "Final Fantasy XVI gameplay", "Square Enix trailer"). Los nombres propios van tal cual, sin traducir.
+- broll: 3-5 términos de búsqueda EN INGLÉS de vídeo de stock GENÉRICO, que es el respaldo para cuando no se encuentra material real (ej. "video game controller", "esports arena", "game developer office"). Aquí sí deben ser conceptos genéricos: nada de nombres de juegos ni marcas, porque no existen como stock libre.
 
 Responde SOLO con un objeto JSON válido, sin markdown ni texto extra, con esta forma exacta:
-{"hook": "...", "cuerpo": "...", "cierre": "...", "hashtags": ["#...", "#..."], "broll": ["...", "..."]}"""
+{"hook": "...", "cuerpo": "...", "cierre": "...", "hashtags": ["#...", "#..."], "material": {"juego": "...", "empresa": "...", "busquedas": ["...", "..."]}, "broll": ["...", "..."]}"""
 
 
 def cargar_estado() -> dict:

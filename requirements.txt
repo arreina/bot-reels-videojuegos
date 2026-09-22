@@ -5,3 +5,6 @@ feedparser==6.0.14
 piper-tts==1.6.0
 requests==2.34.2
 uvicorn==0.52.1
+yt-dlp>=2026.8.19        # trailers oficiales para el fondo; conviene actualizarlo
+                         # a menudo: YouTube cambia y las versiones viejas dejan
+                         # de bajar nada (la del sistema, de 2024, ya no vale)
