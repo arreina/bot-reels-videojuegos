@@ -15,5 +15,5 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
   -addext "subjectAltName=IP:${IP},IP:127.0.0.1,DNS:localhost" 2>/dev/null
 
 echo "Certificado creado para la IP ${IP}"
-echo "Arranca el servidor con ./arrancar_movil.sh y abre https://${IP}:8000 en el móvil."
+echo "Arranca el servidor con ./arrancar_movil.sh y abre https://${IP}:8443 en el móvil."
 echo "Chrome avisará de que el sitio no es seguro: pulsa 'Configuración avanzada' y 'Continuar'."
