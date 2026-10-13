@@ -83,6 +83,14 @@ Entonces el editor del móvil ofrece "Mi voz · XTTS", y por consola
 motor se hizo: la galería marca los de XTTS y la pantalla del resultado avisa de
 que no son monetizables, para no perder la cuenta.
 
+XTTS lee mal las siglas ("a PC, PS5" salía como "pesé, cinco"), así que antes
+de locutar se reescriben con `files/siglas_tts.json` (editable, solo afecta al
+audio, los subtítulos siguen poniendo "PC, PS5"). Las siglas cortas que no están
+en el diccionario se dejan como están y se avisan por consola: un "¡NO!" o un
+"YA" de un gancho no deben acabar deletreados. Además XTTS es aleatorio: cada
+ejecución puede colar una palabra de más ("punto") o tragarse una, y no hay
+ajuste que lo evite del todo; si un reel sale con un fallo, rehacerlo suele bastar.
+
 Corre como proceso aparte (`files/voz_xtts.py`, con el Python de `.venv-voz/`)
 porque necesita PyTorch y `transformers<5`, y eso no cabe en el entorno del bot.
 

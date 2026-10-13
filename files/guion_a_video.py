@@ -92,6 +92,7 @@ MUSICA_DIR = Path("musica")        # pistas propias, si las hay
 MUSICA_CACHE = Path("musica_cache")  # lo descargado del banco libre
 PRONUNCIACIONES_PATH = Path("pronunciaciones.json")
 NOMBRES_INGLESES_PATH = Path("nombres_ingleses.json")
+SIGLAS_PATH = Path("siglas_tts.json")
 MUSICA_VOLUMEN = 0.20  # volumen base de la música bajo la voz (ajustable desde el móvil)
 VOZ_VOLUMEN = 1.0      # multiplicador de la voz: 1.0 = como sale de Piper (ajustable desde el móvil)
 VOZ_VOLUMEN_MAXIMO = 1.5  # por encima de esto empieza a recortar aunque haya limitador
@@ -281,6 +282,64 @@ def generar_audio_xtts(texto: str, salida_wav: Path) -> None:
         raise RuntimeError(f"XTTS falló: {cola}")
 
 
+_LETRAS_ES = {
+    "A": "a", "B": "be", "C": "ce", "D": "de", "E": "e", "F": "efe", "G": "ge",
+    "H": "hache", "I": "i", "J": "jota", "K": "ka", "L": "ele", "M": "eme",
+    "N": "ene", "O": "o", "P": "pe", "Q": "cu", "R": "erre", "S": "ese",
+    "T": "te", "U": "u", "V": "uve", "W": "uve doble", "X": "equis", "Y": "ye",
+    "Z": "zeta",
+}
+_DIGITOS_ES = ("cero", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete",
+               "ocho", "nueve")
+# XVI, III, MMXXVI: números romanos. Se dejan tal cual: no son siglas.
+_ROMANO = re.compile(r"^M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
+
+
+def aplicar_siglas(texto: str) -> str:
+    """
+    Reescribe las siglas como se dicen en voz alta, SOLO para el texto que va al
+    TTS (los subtítulos siguen poniendo "PC, PS5").
+
+    XTTS no sabe qué hacer con ellas: leyó "a PC, PS5 y Xbox Series" como
+    "pesé, cinco". Piper no lo necesita porque espeak ya las deletrea.
+
+    Qué se reescribe:
+      1. Lo que está en siglas_tts.json (editable: añade ahí las que te fallen).
+      2. Sigla de 1-3 letras y una cifra (PS5, F1, E3) -> letras + número.
+      3. Palabras largas en mayúsculas (SNAPTIC, NUNCA) -> en minúscula, para que
+         no las deletree.
+    Qué NO se toca: los números romanos (XVI) y las siglas cortas que no están
+    en el diccionario, porque un "¡NO!" o un "YA" de un gancho acabarían como
+    "ene o". Esas se avisan por consola para que decidas si añadirlas.
+    """
+    reglas = {}
+    if SIGLAS_PATH.is_file():
+        try:
+            reglas = json.loads(SIGLAS_PATH.read_text(encoding="utf-8"))
+        except ValueError:
+            print(f"  [aviso] {SIGLAS_PATH} no es un JSON válido")
+
+    # 1. el diccionario, lo más largo primero
+    for sigla in sorted(reglas, key=len, reverse=True):
+        texto = re.sub(rf"\b{re.escape(sigla)}\b", reglas[sigla], texto)
+
+    def leer(m: re.Match) -> str:
+        t = m.group(0)
+        if _ROMANO.match(t):
+            return t
+        con_cifra = re.fullmatch(r"([A-Z]{1,3})(\d)", t)
+        if con_cifra:                                    # 2. PS5 -> pe ese cinco
+            letras, cifra = con_cifra.groups()
+            return " ".join(_LETRAS_ES[c] for c in letras) + " " + _DIGITOS_ES[int(cifra)]
+        if len(t) >= 4:                                  # 3. SNAPTIC -> Snaptic
+            return t.capitalize()
+        print(f"  [aviso] sigla sin lectura definida, se deja como está: {t} "
+              f"(añádela a siglas_tts.json si suena mal)")
+        return t
+
+    return re.sub(r"\b(?:[A-Z]{1,3}\d|[A-Z]{2,})\b", leer, texto)
+
+
 def generar_audio(guion: dict, salida_wav: Path, motor: str = "piper",
                   modelo_piper: str = VOZ_MODELO_DEFECTO) -> None:
     """Locuta el guion con el motor elegido ('piper' o 'xtts')."""
@@ -288,8 +347,9 @@ def generar_audio(guion: dict, salida_wav: Path, motor: str = "piper",
     if motor == "xtts":
         # Sin pronunciaciones.json ni fonemas ingleses: son arreglos para los
         # fallos de Piper (se come la L de "público", lee "Xbox" como "équis-
-        # boks") y a XTTS, que no los tiene, le estorbarían.
-        generar_audio_xtts(texto, salida_wav)
+        # boks") y a XTTS, que no los tiene, le estorbarían. Las siglas sí hay
+        # que arreglarlas: XTTS lee "PC, PS5" como "pesé, cinco".
+        generar_audio_xtts(aplicar_siglas(texto), salida_wav)
     else:
         generar_audio_piper(texto_para_tts(texto, guion), modelo_piper, salida_wav)
 
