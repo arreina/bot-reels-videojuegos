@@ -674,12 +674,34 @@ $("#btn-generar").onclick = async () => {
   seguir((await r.json()).trabajo);
 };
 
-async function seguir(trabajo) {
-  const r = await fetch("/api/video/" + trabajo);
-  const t = await r.json();
+// Pregunta cada 1,5 s cómo va el trabajo. Tiene que aguantar fallos puntuales:
+// con el móvil dormido, un parpadeo del WiFi o el servidor reiniciándose, una
+// sola consulta fallida mataba el bucle en silencio y la pantalla se quedaba en
+// "Generando" para siempre aunque el vídeo ya estuviera hecho.
+const FALLOS_MAXIMOS_SONDEO = 40;  // a 3 s cada uno, unos 2 minutos sin red
+
+async function seguir(trabajo, fallos = 0, base = actual && actual.id) {
+  let t;
+  try {
+    const r = await fetch("/api/video/" + trabajo);
+    // 404 = el servidor no conoce ese trabajo (se reinició a mitad): puede que
+    // el vídeo sí se terminara, así que se mira antes de dar el trabajo por perdido
+    if (r.status === 404) return recuperarTrabajoPerdido(base);
+    t = await r.json();
+  } catch (e) {
+    if (fallos >= FALLOS_MAXIMOS_SONDEO) {
+      $("#paso").textContent = "";
+      $("#error-video").textContent = "Se perdió la conexión con el PC. El vídeo puede estar " +
+        "hecho: vuelve al listado y ábrelo desde ahí.";
+      $("#error-video").style.display = "block";
+      return;
+    }
+    $("#paso").textContent = "Reconectando con el PC...";
+    return setTimeout(() => seguir(trabajo, fallos + 1, base), 3000);
+  }
   $("#barra-relleno").style.width = t.porcentaje + "%";
   $("#paso").textContent = t.paso;
-  if (t.estado === "trabajando") return setTimeout(() => seguir(trabajo), 1500);
+  if (t.estado === "trabajando") return setTimeout(() => seguir(trabajo, 0, base), 1500);
   if (t.estado === "error") {
     $("#error-video").textContent = t.paso;
     $("#error-video").style.display = "block";
@@ -691,6 +713,27 @@ async function seguir(trabajo) {
   $("#aviso-no-editable").style.display = "none";
   mostrarVideo(t.video);
   cargarClips();
+}
+
+// El servidor perdió el trabajo (se reinició). Si el vídeo llegó a terminarse
+// está en disco: se enseña en vez de dejar al usuario mirando una barra parada.
+async function recuperarTrabajoPerdido(base) {
+  if (!base || !actual || actual.id !== base) return;  // ya se fue a otra noticia
+  try {
+    const r = await fetch("/api/reel/" + base);
+    if (r.ok) {
+      const d = await r.json();
+      $("#progreso").style.display = "none";
+      $("#resultado").style.display = "block";
+      $("#bloque-edicion").style.display = d.editable ? "block" : "none";
+      $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
+      mostrarVideo(d.video);
+      if (d.editable) cargarClips();
+      return;
+    }
+  } catch (e) { /* cae al mensaje de abajo */ }
+  $("#error-video").textContent = "El servidor se reinició y el trabajo se perdió. Vuelve a generarlo.";
+  $("#error-video").style.display = "block";
 }
 
 // Salir de la pantalla del vídeo no lo detiene solo: seguiría sonando encima
