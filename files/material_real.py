@@ -51,8 +51,12 @@ FFMPEG = _localizar("ffmpeg", "bin/ffmpeg")
 FFPROBE = _localizar("ffprobe", "bin/ffprobe")
 
 SEGUNDOS_POR_CORTE = 4.0   # mismo corte que usa el fondo de stock
-CABECERA_A_SALTAR = 3.0    # los primeros segundos suelen ser logos de la marca
-COLA_A_SALTAR = 4.0        # y los últimos, la pantalla de "reserva ya"
+# Los extremos de un trailer no son el juego: al principio va la calificación
+# por edades (ese PEGI 18 sobre negro) y el logo de la marca, y al final la
+# fecha de salida, la carátula y el "PLAY HAS NO LIMITS" de turno. Se tira
+# ancho: un trailer dura minuto y medio largo y sobra material.
+CABECERA_A_SALTAR = 8.0
+COLA_A_SALTAR = 12.0
 
 # Solo se le pasan a yt-dlp enlaces de estos dominios. El buscador de la
 # interfaz recibe el enlace desde el navegador y yt-dlp entiende cientos de
@@ -144,6 +148,12 @@ PALABRAS_VETADAS = (
 DURACION_MINIMA = 20.0    # menos que eso no da ni para tres cortes
 DURACION_MAXIMA = 900.0   # los directos de dos horas no valen
 
+# Steam llega a publicar como "vídeo" la propia tarjeta de calificación por
+# edades: la ficha de Final Fantasy XVI tiene uno que se llama "PEGI EN" y es
+# eso y nada más.
+PALABRAS_DE_AVISO = ("pegi", "esrb", "usk", "cero", "classification",
+                     "age rating", "rating", "aviso legal")
+
 
 def _normalizar(texto: str) -> str:
     """Minúsculas y sin tildes, para comparar nombres de canal con holgura."""
@@ -176,6 +186,11 @@ def clasificar_canal(canal: str, empresa: str = "") -> tuple[str, str]:
         if re.search(rf"\b{re.escape(clave)}\b", normal):
             return "medio", nombre
     return "desconocido", canal
+
+
+def _es_tarjeta_de_aviso(nombre: str) -> bool:
+    normal = _normalizar(nombre)
+    return any(aviso in normal for aviso in PALABRAS_DE_AVISO)
 
 
 def _titulo_util(titulo: str) -> bool:
@@ -285,7 +300,7 @@ def buscar_en_steam(juego: str, limite: int = 4) -> list[dict]:
     for video in (ficha.get("movies") or [])[:limite]:
         # mp4 en las fichas antiguas, HLS en las nuevas
         enlace = (video.get("mp4") or {}).get("max") or video.get("hls_h264") or ""
-        if not enlace:
+        if not enlace or _es_tarjeta_de_aviso(video.get("name", "")):
             continue
         candidatos.append({
             "id": f"steam_{video['id']}",
@@ -418,20 +433,62 @@ def descargar(candidato: dict) -> Path | None:
     return descargados[0] if descargados else None
 
 
-LUMINANCIA_MINIMA = 18.0  # por debajo de esto el fotograma es negro o casi
+# Umbrales medidos sobre un trailer lleno de tarjetas (Final Fantasy XVI):
+# los cortes con tarjeta dan un 26% de fotogramas por debajo de 25 de brillo y
+# además salen congelados; los cortes buenos se quedan en un 0-6% y ninguno
+# congela. OJO: la tarjeta de texto sobre negro NO es negro puro, marca 19 de
+# brillo, así que un umbral de 18 la dejaba pasar por los pelos.
+LUMINANCIA_MINIMA = 25.0
+FRACCION_OSCURA_MAXIMA = 0.15
+UMBRAL_CONGELADO = 0.01    # sensibilidad de freezedetect (ruido por debajo)
 
 
-def _esquivar_negros(fuente: Path, ideal: float, margen: float,
-                     segundos: float) -> float | None:
+def analizar_tramo(fuente: Path, inicio: float, segundos: float) -> tuple[float, bool]:
     """
-    Corrige el punto de corte para que no caiga en un fundido a negro. Prueba
-    el sitio ideal y, si está oscuro, se desplaza dentro del hueco que le toca
-    a ese corte. Devuelve None si todo el tramo está negro.
+    Mira el corte ENTERO de una pasada y devuelve (fracción de fotogramas
+    oscuros, si hay imagen congelada).
+
+    Hay que mirarlo entero y no un fotograma suelto: las tarjetas que se
+    cuelan (el PEGI sobre negro, el logo del estudio, "FOR LONG ENOUGH", la
+    fecha de salida) ocupan el principio o el final del corte, así que
+    midiendo solo el centro pasan desapercibidas. Medido sobre un trailer con
+    tarjetas: los cortes con tarjeta dan 7-28% de fotogramas oscuros y los
+    buenos, 0%.
+    """
+    proceso = subprocess.run(
+        [FFMPEG, "-v", "info", "-ss", f"{inicio:.3f}", "-t", f"{segundos:.3f}",
+         "-i", str(fuente),
+         # a 192 px de ancho sobra para esto y va mucho más rápido.
+         # freezedetect caza además la tarjeta fija que no sea oscura.
+         "-vf", (f"scale=192:-2,freezedetect=n={UMBRAL_CONGELADO}:d={segundos / 5:.2f},"
+                 "signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-"),
+         "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    brillos = [float(v) for v in re.findall(r"YAVG=([\d.]+)", proceso.stdout)]
+    if not brillos:
+        return 0.0, False  # si no se puede medir, que pase
+    oscuros = sum(1 for b in brillos if b < LUMINANCIA_MINIMA) / len(brillos)
+    return oscuros, "freeze_start" in proceso.stderr
+
+
+def tramo_aprovechable(fuente: Path, inicio: float, segundos: float) -> bool:
+    """¿Este corte es juego de verdad, y no una tarjeta ni un fundido a negro?"""
+    oscuros, congelado = analizar_tramo(fuente, inicio, segundos)
+    return oscuros <= FRACCION_OSCURA_MAXIMA and not congelado
+
+
+def _buscar_momento(fuente: Path, ideal: float, margen: float,
+                    segundos: float) -> float | None:
+    """
+    Corrige el punto de corte para que no caiga en una tarjeta ni en un
+    fundido. Prueba el sitio ideal y, si no vale, se desplaza dentro del hueco
+    que le toca a ese corte. Devuelve None si no hay nada aprovechable.
     """
     saltos = [0.0, margen * 0.25, margen * 0.5, -margen * 0.25]
     for salto in saltos:
         momento = max(ideal + salto, 0.0)
-        if luminancia(fuente, momento + segundos / 2) >= LUMINANCIA_MINIMA:
+        if tramo_aprovechable(fuente, momento, segundos):
             return momento
     return None
 
@@ -441,16 +498,21 @@ def ruta_de_corte(corte_id: str) -> Path:
     return CACHE / f"clip_{corte_id}.mp4"
 
 
-def _candidato_corte(trailer: dict, indice: int, inicio: float,
-                     segundos: float) -> dict:
+def _candidato_corte(trailer: dict, inicio: float, segundos: float) -> dict:
     """
     Un corte concreto de un trailer, con la misma forma que un candidato de
     stock para que el plan, el selector y el remontaje lo traten igual. Lleva
     además de dónde sale (`enlace` + `inicio`), que es lo que permite volver a
     generarlo si se vacía la caché.
+
+    OJO con el id: lleva el MOMENTO en centésimas, no el número de corte. Con
+    el número, al afinar los filtros de tarjetas el archivo cacheado del corte
+    nº 3 se reutilizaba aunque ahora el corte nº 3 saliera de otro segundo del
+    trailer, y las mejoras no se veían nunca. Con el momento, cambiar de
+    segundo cambia de archivo.
     """
     return {
-        "id": f"{trailer['id']}_{indice}",
+        "id": f"{trailer['id']}_{int(round(inicio * 100))}",
         "enlace": trailer["enlace"],
         "imagen": trailer.get("imagen", ""),
         "termino": trailer.get("termino", ""),
@@ -507,10 +569,10 @@ def trocear(fuente: Path, cuantos: int, trailer: dict,
     CACHE.mkdir(exist_ok=True)
     cortes = []
     for i in range(cuantos):
-        desde = _esquivar_negros(fuente, inicio + paso * i, paso, segundos)
+        desde = _buscar_momento(fuente, inicio + paso * i, paso, segundos)
         if desde is None:
             continue  # ese tramo del trailer es todo fundidos: se salta
-        corte = _candidato_corte(trailer, i, desde, segundos)
+        corte = _candidato_corte(trailer, desde, segundos)
         if not _cortar(fuente, ruta_de_corte(corte["id"]), desde, segundos):
             continue
         registrar_credito(ruta_de_corte(corte["id"]), corte)
@@ -580,9 +642,9 @@ def corte_suelto(trailer: dict, evitar: list[float] | None = None,
         desde = inicio + i * segundos
         if any(abs(desde - y) < segundos for y in evitar):
             continue
-        if luminancia(fuente, desde + segundos / 2) < LUMINANCIA_MINIMA:
+        if not tramo_aprovechable(fuente, desde, segundos):
             continue
-        corte = _candidato_corte(trailer, i, desde, segundos)
+        corte = _candidato_corte(trailer, desde, segundos)
         if _cortar(fuente, ruta_de_corte(corte["id"]), desde, segundos):
             registrar_credito(ruta_de_corte(corte["id"]), corte)
             return corte

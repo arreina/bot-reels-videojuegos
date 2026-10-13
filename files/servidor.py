@@ -502,7 +502,7 @@ def _producir_video(trabajo_id: str, datos: dict) -> None:
 
         paso("Generando la voz...", 15)
         texto = gv.construir_texto(guion)
-        gv.generar_audio_piper(gv.aplicar_pronunciaciones(texto),
+        gv.generar_audio_piper(gv.texto_para_tts(texto, guion),
                                gv.VOZ_MODELO_DEFECTO, audio_wav)
 
         paso("Preparando subtítulos...", 30)

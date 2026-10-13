@@ -82,6 +82,7 @@ BROLL_CACHE = Path("broll_cache")
 MUSICA_DIR = Path("musica")        # pistas propias, si las hay
 MUSICA_CACHE = Path("musica_cache")  # lo descargado del banco libre
 PRONUNCIACIONES_PATH = Path("pronunciaciones.json")
+NOMBRES_INGLESES_PATH = Path("nombres_ingleses.json")
 MUSICA_VOLUMEN = 0.20  # volumen base de la música bajo la voz (ajustable desde el móvil)
 
 ANCHO, ALTO = 1080, 1920  # formato 9:16 (reel/short)
@@ -123,6 +124,91 @@ def aplicar_pronunciaciones(texto: str) -> str:
         texto = re.sub(rf"\b{re.escape(original)}\b", reescritura, texto,
                        flags=re.IGNORECASE)
     return texto
+
+
+_fonemizador_ingles = None
+
+
+def _ipa_inglesa(nombre: str) -> str:
+    """Fonemas ingleses de un nombre propio, con el espeak que ya trae Piper."""
+    global _fonemizador_ingles
+    if _fonemizador_ingles is None:
+        from piper.phonemize_espeak import EspeakPhonemizer
+        _fonemizador_ingles = EspeakPhonemizer()
+    frases = _fonemizador_ingles.phonemize("en-us", nombre)
+    return "".join("".join(frase) for frase in frases).strip()
+
+
+def _variantes_del_titulo(nombre: str) -> list[str]:
+    """
+    El título tal cual y como suele aparecer abreviado en el texto.
+
+    El guionista escribe "State of Decay 3" en el bloque material, pero el
+    cuerpo de la noticia habla de "State of Decay" a secas; sin esto, la saga
+    se quedaría sin acento inglés. Se quitan el subtítulo tras los dos puntos
+    y el número final, en cifra o en romano.
+    """
+    nombre = (nombre or "").strip()
+    if not nombre:
+        return []
+    variantes = [nombre]
+    sin_subtitulo = nombre.split(":")[0].strip()
+    sin_numero = re.sub(r"\s+(\d+|[IVXLC]+)$", "", sin_subtitulo).strip()
+    for variante in (sin_subtitulo, sin_numero):
+        # de dos letras para abajo no se distingue de una palabra cualquiera
+        if len(variante) > 3 and variante not in variantes:
+            variantes.append(variante)
+    return variantes
+
+
+def nombres_ingleses_de(guion: dict) -> list[str]:
+    """
+    Nombres propios que hay que decir en inglés en esta noticia: el juego y la
+    empresa que escribió el guionista, más las marcas que salen en todas.
+    """
+    material = guion.get("material") or {}
+    propios = []
+    for nombre in (material.get("juego", ""), material.get("empresa", "")):
+        propios += _variantes_del_titulo(nombre)
+    base = []
+    if NOMBRES_INGLESES_PATH.is_file():
+        try:
+            base = json.loads(NOMBRES_INGLESES_PATH.read_text(encoding="utf-8"))
+        except ValueError:
+            print(f"  [aviso] {NOMBRES_INGLESES_PATH} no es un JSON válido")
+    return [n.strip() for n in list(propios) + list(base) if n and n.strip()]
+
+
+def aplicar_nombres_ingleses(texto: str, nombres: list[str]) -> str:
+    """
+    Marca los nombres propios ingleses para que Piper los pronuncie en inglés.
+
+    Sin esto la voz española lee "Undead Labs" como "un-de-ád labs" y "Xbox"
+    como "équis-boks", porque le aplica las reglas del español a todo. Piper
+    acepta fonemas en crudo entre dobles corchetes dentro del texto, así que
+    cada nombre se sustituye por su transcripción inglesa.
+
+    Como aplicar_pronunciaciones, esto SOLO toca el texto que va al TTS: los
+    subtítulos siguen mostrando el nombre bien escrito.
+    """
+    if not nombres:
+        return texto
+    # los más largos primero, para que "State of Decay" gane a "Decay" suelto
+    patron = "|".join(re.escape(n) for n in sorted(set(nombres), key=len, reverse=True))
+
+    def sustituir(coincidencia: re.Match) -> str:
+        ipa = _ipa_inglesa(coincidencia.group(0))
+        return f"[[{ipa}]]" if ipa else coincidencia.group(0)
+
+    return re.sub(rf"\b(?:{patron})\b", sustituir, texto, flags=re.IGNORECASE)
+
+
+def texto_para_tts(texto: str, guion: dict) -> str:
+    """Pasa el texto por los dos arreglos de pronunciación, en este orden."""
+    # primero las reescrituras en español; si se hiciera al revés, el regex de
+    # pronunciaciones podría meterse dentro de los fonemas ya insertados
+    texto = aplicar_pronunciaciones(texto)
+    return aplicar_nombres_ingleses(texto, nombres_ingleses_de(guion))
 
 
 def generar_audio_piper(texto: str, modelo: str, salida_wav: Path) -> None:
@@ -862,7 +948,7 @@ def main():
     salida_mp4 = SALIDA_DIR / f"{base_id}.mp4"
 
     texto = construir_texto(guion)
-    texto_hablado = aplicar_pronunciaciones(texto)
+    texto_hablado = texto_para_tts(texto, guion)
     print(f"[1/4] Generando audio con Piper ({len(texto)} caracteres)...")
     generar_audio_piper(texto_hablado, args.voz, audio_wav)
 

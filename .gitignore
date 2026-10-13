@@ -27,3 +27,5 @@ files/traducciones.json
 
 # Ajustes locales de Claude Code
 .claude/settings.local.json
+# Muestras de voz grabadas para pruebas: son personales
+voz_muestra/
