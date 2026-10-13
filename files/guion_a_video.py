@@ -84,6 +84,8 @@ MUSICA_CACHE = Path("musica_cache")  # lo descargado del banco libre
 PRONUNCIACIONES_PATH = Path("pronunciaciones.json")
 NOMBRES_INGLESES_PATH = Path("nombres_ingleses.json")
 MUSICA_VOLUMEN = 0.20  # volumen base de la música bajo la voz (ajustable desde el móvil)
+VOZ_VOLUMEN = 1.0      # multiplicador de la voz: 1.0 = como sale de Piper (ajustable desde el móvil)
+VOZ_VOLUMEN_MAXIMO = 1.5  # por encima de esto empieza a recortar aunque haya limitador
 
 ANCHO, ALTO = 1080, 1920  # formato 9:16 (reel/short)
 SEGUNDOS_POR_CORTE = 4.0  # duración de cada corte de B-roll en el fondo
@@ -799,7 +801,8 @@ def generar_srt_creditos(cortes: list[tuple[str, float]], salida_srt: Path) -> b
 def montar_video(audio_wav: Path, srt: Path, salida_mp4: Path, duracion: float,
                  clips: list[tuple[str, float]] | None = None,
                  musica: Path | None = None,
-                 volumen_musica: float = MUSICA_VOLUMEN) -> None:
+                 volumen_musica: float = MUSICA_VOLUMEN,
+                 volumen_voz: float = VOZ_VOLUMEN) -> None:
     """
     Monta el vídeo final:
       - Fondo: cortes de B-roll de stock libre (Pexels o clips propios) si hay
@@ -870,7 +873,11 @@ def montar_video(audio_wav: Path, srt: Path, salida_mp4: Path, duracion: float,
         entrada_wave = "[vozwave]"
         audio_graph = (
             f"[{idx_audio}:a]asplit=3[vozwave][vozsc][vozpre];"
-            f"[vozpre]volume=0.88[vozmix];"  # deja margen para sumar la música
+            # 0.88 deja margen para sumar la música; el control del usuario
+            # multiplica encima. El visualizador (vozwave) y el ducking (vozsc)
+            # salen de la voz SIN escalar: así las ondas no se encogen al bajar
+            # la voz y la música se agacha igual de pronto.
+            f"[vozpre]volume={0.88 * volumen_voz:.3f}[vozmix];"
             f"[{idx_musica}:a]volume={volumen_musica},afade=t=in:d=1,"
             f"afade=t=out:st={max(duracion - 1.5, 0):.3f}:d=1.5[mus0];"
             # ducking: baja la música unos 4 dB mientras habla la voz.
@@ -881,6 +888,18 @@ def montar_video(audio_wav: Path, srt: Path, salida_mp4: Path, duracion: float,
             # limitador: evita que voz+música saturen al sumarse
             f"[vozmix][musduck]amix=inputs=2:duration=first:normalize=0,"
             f"alimiter=limit=0.79:attack=5:release=80:level=0[aout];"  # techo ~-2 dB (margen para el códec AAC)
+        )
+        mapa_audio = "[aout]"
+    elif abs(volumen_voz - 1.0) > 0.01:
+        # Sin música la voz iba directa al mp4. Para escalarla hay que sacarla
+        # por el filtro, y una entrada solo puede usarse una vez en el grafo:
+        # de ahí el asplit (una copia para las ondas, otra para el sonido).
+        entrada_wave = "[vozwave]"
+        audio_graph = (
+            f"[{idx_audio}:a]asplit=2[vozwave][vozraw];"
+            # limitador: al subir por encima de 1 la voz podría recortar
+            f"[vozraw]volume={volumen_voz:.3f},"
+            f"alimiter=limit=0.79:attack=5:release=80:level=0[aout];"
         )
         mapa_audio = "[aout]"
     else:
@@ -933,6 +952,9 @@ def main():
     parser.add_argument("--musica-local", action="store_true",
                         help="No busca en el banco: usa una pista al azar de musica/")
     parser.add_argument("--sin-musica", action="store_true", help="Sin música de fondo")
+    parser.add_argument("--volumen-voz", type=float, default=VOZ_VOLUMEN,
+                        help=f"Multiplicador del volumen de la voz (1.0 = normal, "
+                             f"máximo {VOZ_VOLUMEN_MAXIMO})")
     args = parser.parse_args()
 
     ruta_guion = Path(args.guion_json)
@@ -1013,7 +1035,9 @@ def main():
             print("  [aviso] Sin música: ni el banco ni musica/ dieron ninguna pista.")
 
     print(f"[4/4] Montando vídeo final con FFmpeg ({'B-roll' if clips else 'gradiente'})...")
-    montar_video(audio_wav, srt_path, salida_mp4, dur, clips=clips, musica=musica)
+    volumen_voz = max(0.2, min(args.volumen_voz, VOZ_VOLUMEN_MAXIMO))
+    montar_video(audio_wav, srt_path, salida_mp4, dur, clips=clips, musica=musica,
+                 volumen_voz=volumen_voz)
 
     print(f"[ok] Vídeo generado: {salida_mp4}")
 

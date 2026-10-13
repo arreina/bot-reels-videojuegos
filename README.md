@@ -124,6 +124,7 @@ cd files
 ../.venv/bin/python3 noticias_reel.py --max 5            # --dry-run para solo listar
 ../.venv/bin/python3 guion_a_video.py guiones/<id>.json        # música al azar del banco
 ../.venv/bin/python3 guion_a_video.py guiones/<id>.json --musica "epic"   # o un archivo concreto
+../.venv/bin/python3 guion_a_video.py guiones/<id>.json --volumen-voz 1.3   # voz al 130% (de 0,2 a 1,5)
 ```
 
 ## Detalles que cuesta redescubrir

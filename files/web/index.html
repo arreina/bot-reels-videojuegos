@@ -403,7 +403,7 @@ async function abrirNoticia(id) {
   // Cada noticia arranca con su propia música: si no se limpia, se arrastra la
   // de la anterior y el editor enseña una canción que no tiene nada que ver.
   musicaElegida = tituloMusica = creditoMusica = creditoImagenes = null;
-  volumenMusica = 0.20;
+  volumenMusica = 0.20; volumenVoz = 1.0;
   if (actual.tiene_video) await recuperarMusicaDelVideo(id);
   try {
     const r = await fetch("/api/guion/" + id, { method: "POST" });
@@ -529,7 +529,7 @@ async function escribirGuionManual() {
     if (anterior) noticias[noticias.indexOf(anterior)] = actual;
     else noticias.unshift(actual);
     musicaElegida = tituloMusica = creditoMusica = creditoImagenes = null;
-    volumenMusica = 0.20;
+    volumenMusica = 0.20; volumenVoz = 1.0;
     if (actual.tiene_video) await recuperarMusicaDelVideo(actual.id);
     pantalla("editor", "Guion", true);
     $("#editor-titulo").textContent = actual.titulo;
@@ -601,6 +601,7 @@ async function recuperarMusicaDelVideo(id) {
     creditoMusica = d.credito_musica;
     creditoImagenes = d.credito_imagenes;
     volumenMusica = d.volumen_musica;
+    volumenVoz = d.volumen_voz ?? 1.0;
   } catch (e) { /* sin plan guardado se queda con los valores por defecto */ }
 }
 
@@ -660,6 +661,7 @@ $("#btn-generar").onclick = async () => {
     material: (guionActual && guionActual.material) || {},
     musica: musicaElegida,
     volumen_musica: volumenMusica,
+    volumen_voz: volumenVoz,
   };
   pantalla("video", "Generando", true);
   $("#progreso").style.display = "block";
@@ -723,6 +725,7 @@ async function cargarClips() {
     musicaElegida = d.musica;
     tituloMusica = d.titulo_musica;
     volumenMusica = d.volumen_musica;
+    volumenVoz = d.volumen_voz ?? 1.0;
     creditoMusica = d.credito_musica;
     creditoImagenes = d.credito_imagenes;
     pintarMusica("musica-resultado");
@@ -814,6 +817,9 @@ let musicaElegida = null, tituloMusica = null, volumenMusica = 0.20,
 // Atribución del material real del fondo ("Imágenes: PlayStation"): va
 // sobreimpresa en el vídeo y además hay que ponerla en la descripción.
 let creditoImagenes = null;
+// Multiplicador de la voz (1 = como sale de Piper). Va aparte del de la música
+// porque es lo que el oyente nota primero: voz baja = reel inaudible en el móvil.
+let volumenVoz = 1.0;
 
 // Ojo: hay dos bloques de música a la vez (editor y resultado). Nada de id=,
 // o querySelector devolvería siempre el del editor y el otro quedaría muerto.
@@ -833,6 +839,10 @@ function pintarMusica(destino) {
       <input type="range" class="mus-volumen" min="0" max="60" value="${pct}">
       <div class="ayuda" style="margin-top:2px">Volumen de la música:
         <b class="mus-etiqueta">${pct}%</b> (la voz siempre manda)</div>
+      <input type="range" class="voz-volumen" min="20" max="150" value="${Math.round(volumenVoz * 100)}"
+             style="margin-top:14px">
+      <div class="ayuda" style="margin-top:2px">Volumen de la voz:
+        <b class="voz-etiqueta">${Math.round(volumenVoz * 100)}%</b> (100% = normal)</div>
       ${creditoMusica ? `<div class="ayuda" style="margin-top:8px">📋 ${escapar(creditoMusica)}</div>` : ""}
     </div>`;
   caja.querySelector(".mus-cambiar").onclick = abrirMusica;
@@ -841,6 +851,13 @@ function pintarMusica(destino) {
   rango.oninput = () => etiqueta.textContent = rango.value + "%";
   rango.onchange = () => {
     volumenMusica = +rango.value / 100;
+    if (destino === "musica-resultado") aplicarMusica();
+  };
+  const rangoVoz = caja.querySelector(".voz-volumen");
+  const etiquetaVoz = caja.querySelector(".voz-etiqueta");
+  rangoVoz.oninput = () => etiquetaVoz.textContent = rangoVoz.value + "%";
+  rangoVoz.onchange = () => {
+    volumenVoz = +rangoVoz.value / 100;
     if (destino === "musica-resultado") aplicarMusica();
   };
 }
@@ -958,7 +975,8 @@ function volverDeMusica() {
 async function aplicarMusica() {
   await fetch("/api/musica/" + actual.id, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ musica: musicaElegida, volumen_musica: volumenMusica }),
+    body: JSON.stringify({ musica: musicaElegida, volumen_musica: volumenMusica,
+                           volumen_voz: volumenVoz }),
   });
   $("#btn-remontar").style.display = "block";
 }

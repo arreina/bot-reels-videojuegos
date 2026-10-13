@@ -71,6 +71,7 @@ class GuionEditado(BaseModel):
     material: dict = {}
     musica: str | None = None          # nombre del archivo, o None para aleatoria
     volumen_musica: float = gv.MUSICA_VOLUMEN
+    volumen_voz: float = gv.VOZ_VOLUMEN
 
 
 def _ip_local() -> str:
@@ -448,9 +449,16 @@ def servir_musica(nombre: str):
     return FileResponse(ruta)
 
 
+def _acotar_voz(volumen: float) -> float:
+    """Entre 20% y el máximo: por debajo no se oye y por encima recorta."""
+    return max(0.2, min(volumen, gv.VOZ_VOLUMEN_MAXIMO))
+
+
 class AjusteMusica(BaseModel):
     musica: str | None = None
     volumen_musica: float = gv.MUSICA_VOLUMEN
+    # None = no tocar: así un cliente que solo cambie la música no resetea la voz
+    volumen_voz: float | None = None
 
 
 @app.post("/api/musica/{base_id}")
@@ -462,9 +470,12 @@ def cambiar_musica(base_id: str, ajuste: AjusteMusica):
     pista = _elegir_musica(ajuste.musica) if ajuste.musica else None
     plan["musica"] = str(pista) if pista else None
     plan["volumen_musica"] = max(0.0, min(ajuste.volumen_musica, 1.0))
+    if ajuste.volumen_voz is not None:
+        plan["volumen_voz"] = _acotar_voz(ajuste.volumen_voz)
     _guardar_plan(base_id, plan)
     return {"musica": pista.name if pista else None,
-            "volumen_musica": plan["volumen_musica"]}
+            "volumen_musica": plan["volumen_musica"],
+            "volumen_voz": plan.get("volumen_voz", gv.VOZ_VOLUMEN)}
 
 
 def _montar(base_id: str, trabajo_id: str) -> None:
@@ -480,7 +491,8 @@ def _montar(base_id: str, trabajo_id: str) -> None:
 
     gv.SALIDA_DIR.mkdir(exist_ok=True)
     gv.montar_video(audio_wav, srt_path, salida_mp4, dur, clips=clips, musica=musica,
-                    volumen_musica=plan.get("volumen_musica", gv.MUSICA_VOLUMEN))
+                    volumen_musica=plan.get("volumen_musica", gv.MUSICA_VOLUMEN),
+                    volumen_voz=_acotar_voz(plan.get("volumen_voz", gv.VOZ_VOLUMEN)))
     _trabajos[trabajo_id].update(
         estado="listo", paso="Vídeo listo", porcentaje=100,
         # el sufijo obliga al navegador a recargar el vídeo en vez de usar el viejo
@@ -514,7 +526,8 @@ def _producir_video(trabajo_id: str, datos: dict) -> None:
         pista = _elegir_musica(datos.get("musica"))
         plan = {"terminos": terminos, "candidatos": [], "usados": [],
                 "musica": str(pista) if pista else None,
-                "volumen_musica": datos.get("volumen_musica", gv.MUSICA_VOLUMEN)}
+                "volumen_musica": datos.get("volumen_musica", gv.MUSICA_VOLUMEN),
+                "volumen_voz": _acotar_voz(datos.get("volumen_voz", gv.VOZ_VOLUMEN))}
 
         # 1º imágenes reales de eso mismo: trailers del juego o de la marca
         material = guion.get("material") or {}
@@ -590,6 +603,7 @@ def listar_clips(base_id: str):
         "musica": nombre_musica,
         "titulo_musica": credito.get("titulo"),
         "volumen_musica": plan.get("volumen_musica", gv.MUSICA_VOLUMEN),
+        "volumen_voz": plan.get("volumen_voz", gv.VOZ_VOLUMEN),
         # textos que habrá que poner en la descripción al publicar
         "credito_musica": credito.get("texto"),
         "credito_imagenes": _credito_imagenes(plan),
@@ -796,6 +810,7 @@ def crear_video(g: GuionEditado):
                   "material": g.material},
         "musica": g.musica,
         "volumen_musica": max(0.0, min(g.volumen_musica, 1.0)),
+        "volumen_voz": _acotar_voz(g.volumen_voz),
     }
     # guarda el guion editado: lo que se publique será exactamente esto
     nr.GUIONES_DIR.mkdir(exist_ok=True)
