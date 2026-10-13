@@ -58,6 +58,34 @@ cp files/.env.ejemplo files/.env   # y rellena PEXELS_API_KEY / PIXABAY_API_KEY
 ./descargar_musica.sh
 ```
 
+### Voz clonada con XTTS (opcional, solo uso no comercial)
+
+Por defecto la locución es de Piper (voz castellana `es_ES-sharvard`, ~2 s por
+guion). Hay un segundo motor, **XTTS v2**, que clona tu voz a partir de una
+muestra de ~15 s y suena bastante más natural, pero:
+
+- **Su licencia solo permite uso no comercial**, y eso incluye el audio que
+  genera: un reel con esta voz no se puede monetizar. Coqui cerró en 2024 y su
+  web de licencias ya no existe, así que tampoco hay a quién comprarle una
+  licencia comercial. Que la empresa quebrara no anula la licencia.
+- Tarda unos 2 minutos por guion en CPU (Piper, 2 segundos).
+- No está activado de serie. Para usarlo:
+
+```bash
+./instalar_voz_xtts.sh                       # entorno aparte, .venv-voz/ (~3 GB + 1,9 GB de pesos)
+# graba ~15 s leyendo con naturalidad (mono) y déjalos en voz_muestra/referencia.wav
+# y en files/.env, SOLO si aceptas la licencia:
+XTTS_LICENCIA_CPML_ACEPTADA=1
+```
+
+Entonces el editor del móvil ofrece "Mi voz · XTTS", y por consola
+`guion_a_video.py guiones/<id>.json --motor xtts`. Cada vídeo recuerda con qué
+motor se hizo: la galería marca los de XTTS y la pantalla del resultado avisa de
+que no son monetizables, para no perder la cuenta.
+
+Corre como proceso aparte (`files/voz_xtts.py`, con el Python de `.venv-voz/`)
+porque necesita PyTorch y `transformers<5`, y eso no cabe en el entorno del bot.
+
 ### De dónde sale el vídeo de fondo
 
 Si la noticia habla de Final Fantasy XVI, el fondo es Final Fantasy XVI. El
@@ -159,6 +187,16 @@ cd files
 - **En `force_style`, `Alignment` usa la numeración vieja de SSA**, no la de
   ASS: 7 es arriba a la derecha y 9 deja el rótulo a media altura y pegado a la
   izquierda, encima de la cara del personaje.
+- **Piper ignora el `?`**: medido con 8 preguntas frente a 8 afirmaciones, el
+  dibujo de tono (registro, inclinación, inicio y final) sale idéntico, con
+  diferencias de 0,1 st o menos. Por eso las preguntas suenan planas y ningún
+  ajuste de Piper lo arregla. Se probó corregir el tono a posteriori con Praat
+  (subir registro, quitar la caída y subir el final) y al usuario no le gustó,
+  así que no está en el bot. XTTS sí distingue preguntas, algo.
+- **Piper acepta fonemas en crudo entre dobles corchetes** (`[[ˈɛksbˈɑːks]]`), y
+  así se pronuncian en inglés los nombres propios ingleses (`nombres_ingleses.json`).
+- **Montar XTTS tiene trampas**: `coqui-tts` no instala PyTorch, no funciona con
+  `transformers` 5 y necesita `torchcodec`. `instalar_voz_xtts.sh` las resuelve.
 - **Sharvard se come la L de los grupos consonánticos** ("público" → "púbico"):
   `files/pronunciaciones.json` reescribe esas palabras ("pú-blico") solo para el
   TTS, nunca para los subtítulos.

@@ -4,6 +4,7 @@ certificado/
 
 # Entorno y binarios pesados: se instalan aparte, el README explica cómo
 .venv/
+.venv-voz/
 bin/
 voces/
 __pycache__/

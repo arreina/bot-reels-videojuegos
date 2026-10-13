@@ -72,6 +72,7 @@ class GuionEditado(BaseModel):
     musica: str | None = None          # nombre del archivo, o None para aleatoria
     volumen_musica: float = gv.MUSICA_VOLUMEN
     volumen_voz: float = gv.VOZ_VOLUMEN
+    motor_voz: str = "piper"           # "piper" (rápido) o "xtts" (tu voz, solo no comercial)
 
 
 def _ip_local() -> str:
@@ -127,6 +128,14 @@ def _cargar_manuales() -> list[dict]:
 def _guardar_manuales(manuales: list[dict]) -> None:
     MANUALES_PATH.write_text(json.dumps(manuales, ensure_ascii=False, indent=2),
                              encoding="utf-8")
+
+
+@app.get("/api/voces")
+def listar_voces():
+    """Motores de voz y si se pueden usar (XTTS exige haber aceptado su licencia)."""
+    disponible, motivo = gv.xtts_disponible()
+    return {"piper": {"disponible": True},
+            "xtts": {"disponible": disponible, "motivo": motivo}}
 
 
 @app.get("/api/noticias")
@@ -497,6 +506,9 @@ def _montar(base_id: str, trabajo_id: str) -> None:
         estado="listo", paso="Vídeo listo", porcentaje=100,
         # el sufijo obliga al navegador a recargar el vídeo en vez de usar el viejo
         video=f"/videos/{salida_mp4.name}?v={int(time.time())}", duracion=round(dur, 1),
+        # va en el propio estado del trabajo para que el aviso de licencia no
+        # dependa de que otra consulta (los clips) salga bien
+        motor_voz=_motor_de(base_id),
     )
 
 
@@ -512,10 +524,10 @@ def _producir_video(trabajo_id: str, datos: dict) -> None:
         audio_wav = gv.TMP_DIR / f"{base_id}.wav"
         srt_path = gv.TMP_DIR / f"{base_id}.srt"
 
-        paso("Generando la voz...", 15)
-        texto = gv.construir_texto(guion)
-        gv.generar_audio_piper(gv.texto_para_tts(texto, guion),
-                               gv.VOZ_MODELO_DEFECTO, audio_wav)
+        motor = datos.get("motor_voz", "piper")
+        paso("Generando tu voz con XTTS (tarda un par de minutos)..." if motor == "xtts"
+             else "Generando la voz...", 15)
+        gv.generar_audio(guion, audio_wav, motor=motor)
 
         paso("Preparando subtítulos...", 30)
         dur = gv.duracion_audio(audio_wav)
@@ -607,7 +619,17 @@ def listar_clips(base_id: str):
         # textos que habrá que poner en la descripción al publicar
         "credito_musica": credito.get("texto"),
         "credito_imagenes": _credito_imagenes(plan),
+        "motor_voz": _motor_de(base_id),
     }
+
+
+def _motor_de(base_id: str) -> str:
+    """Con qué motor de voz se hizo un vídeo ('piper' si no consta, que es lo de antes)."""
+    try:
+        datos = json.loads((nr.GUIONES_DIR / f"{base_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "piper"
+    return datos.get("motor_voz") if datos.get("motor_voz") in gv.MOTORES_VOZ else "piper"
 
 
 def _credito_imagenes(plan: dict) -> str | None:
@@ -758,6 +780,8 @@ def galeria():
             # los créditos hay que ponerlos en la descripción al resubirlo
             "credito_musica": creditos.get(pista, {}).get("texto"),
             "credito_imagenes": _credito_imagenes(plan),
+            # XTTS solo permite uso no comercial: hay que saber qué vídeos lo llevan
+            "motor_voz": _motor_de(base_id),
         })
     videos.sort(key=lambda v: v["fecha"], reverse=True)
     return {"videos": videos, "espacio": espacio}
@@ -775,6 +799,7 @@ def reel_existente(base_id: str):
         "video": f"/videos/{ruta.name}?v={int(ruta.stat().st_mtime)}",
         # sin la voz y el plan no se puede remontar: solo ver y compartir
         "editable": (gv.TMP_DIR / f"{base_id}.wav").is_file() and bool(_cargar_plan(base_id)),
+        "motor_voz": _motor_de(base_id),
     }
 
 
@@ -811,6 +836,7 @@ def crear_video(g: GuionEditado):
         "musica": g.musica,
         "volumen_musica": max(0.0, min(g.volumen_musica, 1.0)),
         "volumen_voz": _acotar_voz(g.volumen_voz),
+        "motor_voz": g.motor_voz if g.motor_voz in gv.MOTORES_VOZ else "piper",
     }
     # guarda el guion editado: lo que se publique será exactamente esto
     nr.GUIONES_DIR.mkdir(exist_ok=True)

@@ -217,6 +217,13 @@
     <input type="text" id="f-broll">
     <p class="ayuda">Términos en inglés separados por comas. Genéricos, sin nombres de juegos ni marcas.</p>
 
+    <label for="f-motor">Voz de la locución</label>
+    <select id="f-motor">
+      <option value="piper">Piper · rápida (unos 2 s)</option>
+      <option value="xtts" disabled>Mi voz · XTTS (unos 2 min)</option>
+    </select>
+    <p class="ayuda" id="ayuda-motor"></p>
+
     <label>Música de fondo</label>
     <div id="musica-editor"></div>
 
@@ -255,6 +262,8 @@
     </div>
     <div id="resultado" style="display:none">
       <video id="reproductor" controls playsinline></video>
+      <div class="aviso" id="aviso-xtts" style="display:none">⚠️ Voz XTTS: su licencia solo
+        permite uso <b>no comercial</b>. Este reel no se puede monetizar.</div>
 
       <!-- para los vídeos que ya no se pueden editar, esta es la única
            forma de ver la atribución obligatoria de su música -->
@@ -420,6 +429,8 @@ async function abrirNoticia(id) {
 
 function rellenarEditor(datos) {
   guionActual = datos.guion;
+  $("#f-motor").value = "piper";
+  ayudaMotor();
   $("#f-hook").value = guionActual.hook || "";
   $("#f-cuerpo").value = guionActual.cuerpo || "";
   $("#f-cierre").value = guionActual.cierre || "";
@@ -456,7 +467,7 @@ async function abrirGaleria() {
     <div class="opcion" data-i="${i}">
       ${v.miniatura ? `<img src="${v.miniatura}" alt="" loading="lazy">` : '<img alt="">'}
       <div class="sello galeria"><b>${escapar(v.titulo)}</b>
-        <span>${v.duracion ? Math.round(v.duracion) + "s · " : ""}${fechaBonita(v.fecha)}</span></div>
+        <span>${v.duracion ? Math.round(v.duracion) + "s · " : ""}${fechaBonita(v.fecha)}${v.motor_voz === "xtts" ? " · ⚠️ XTTS: no monetizable" : ""}</span></div>
     </div>`).join("");
   $("#galeria").querySelectorAll(".opcion").forEach(el => {
     el.onclick = () => abrirDeGaleria(d.videos[+el.dataset.i]);
@@ -618,6 +629,7 @@ async function verVideoExistente() {
   // tocar ese reproductor o ese deslizador escribiría en el plan de ESTA noticia.
   $("#resultado").style.display = "none";
   $("#credito-suelto").style.display = "none";
+  avisoMotor("piper");
   pararVideo();
   $("#reproductor").removeAttribute("src");
   $("#clips").innerHTML = $("#musica-resultado").innerHTML = "";
@@ -631,6 +643,7 @@ async function verVideoExistente() {
     mostrarVideo(d.video);
     $("#bloque-edicion").style.display = d.editable ? "block" : "none";
     $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
+    avisoMotor(d.motor_voz);
     // sin bloque de música, el crédito se enseña suelto: hay que ponerlo al subirlo
     const suelto = $("#credito-suelto");
     const creditos = [creditoImagenes, creditoMusica].filter(Boolean);
@@ -662,6 +675,7 @@ $("#btn-generar").onclick = async () => {
     musica: musicaElegida,
     volumen_musica: volumenMusica,
     volumen_voz: volumenVoz,
+    motor_voz: $("#f-motor").value,
   };
   pantalla("video", "Generando", true);
   $("#progreso").style.display = "block";
@@ -711,6 +725,7 @@ async function seguir(trabajo, fallos = 0, base = actual && actual.id) {
   $("#resultado").style.display = "block";
   $("#bloque-edicion").style.display = "block";
   $("#aviso-no-editable").style.display = "none";
+  avisoMotor(t.motor_voz);
   mostrarVideo(t.video);
   cargarClips();
 }
@@ -727,6 +742,7 @@ async function recuperarTrabajoPerdido(base) {
       $("#resultado").style.display = "block";
       $("#bloque-edicion").style.display = d.editable ? "block" : "none";
       $("#aviso-no-editable").style.display = d.editable ? "none" : "block";
+      avisoMotor(d.motor_voz);
       mostrarVideo(d.video);
       if (d.editable) cargarClips();
       return;
@@ -734,6 +750,32 @@ async function recuperarTrabajoPerdido(base) {
   } catch (e) { /* cae al mensaje de abajo */ }
   $("#error-video").textContent = "El servidor se reinició y el trabajo se perdió. Vuelve a generarlo.";
   $("#error-video").style.display = "block";
+}
+
+// --- Motor de voz ---
+// XTTS clona tu voz pero su licencia solo permite uso no comercial, así que no
+// se ofrece sin más: el servidor dice si está instalado y aceptado, y cada vídeo
+// recuerda con qué motor se hizo para poder avisar luego.
+async function cargarVoces() {
+  try {
+    const d = await (await fetch("/api/voces")).json();
+    const opcion = $("#f-motor").querySelector('option[value="xtts"]');
+    opcion.disabled = !d.xtts.disponible;
+    $("#f-motor").dataset.motivo = d.xtts.disponible ? "" : d.xtts.motivo;
+  } catch (e) { /* sin lista se queda solo con Piper */ }
+  ayudaMotor();
+}
+
+function ayudaMotor() {
+  const motor = $("#f-motor").value;
+  const motivo = $("#f-motor").dataset.motivo || "";
+  $("#ayuda-motor").textContent = motor === "xtts"
+    ? "Clona tu voz. Tarda un par de minutos y su licencia es solo para uso NO comercial: este reel no se podrá monetizar."
+    : (motivo ? "Mi voz (XTTS) no está disponible: " + motivo : "Piper no tiene ninguna restricción de licencia.");
+}
+
+function avisoMotor(motor) {
+  $("#aviso-xtts").style.display = motor === "xtts" ? "block" : "none";
 }
 
 // Salir de la pantalla del vídeo no lo detiene solo: seguiría sonando encima
@@ -765,6 +807,7 @@ async function cargarClips() {
     if (!r.ok) { $("#clips").innerHTML = ""; return; }
     const d = await r.json();
     if (!actual || actual.id !== id) return;  // el usuario ya se fue a otra
+    avisoMotor(d.motor_voz);
     musicaElegida = d.musica;
     tituloMusica = d.titulo_musica;
     volumenMusica = d.volumen_musica;
@@ -1083,6 +1126,8 @@ $("#btn-atras").onclick = () => {
 $("#btn-otra").onclick = () => { pararVideo(); cargarNoticias(); pantalla("lista", "Noticias", false); };
 $("#btn-refrescar").onclick = () => cargarNoticias(true);
 
+$("#f-motor").onchange = ayudaMotor;
+cargarVoces();
 cargarNoticias();
 </script>
 </body>

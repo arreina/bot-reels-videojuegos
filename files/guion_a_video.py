@@ -76,6 +76,15 @@ FFPROBE = _localizar("ffprobe", "bin/ffprobe")
 PIPER = _localizar("piper", ".venv/bin/piper")
 
 VOZ_MODELO_DEFECTO = str(RAIZ_PROYECTO / "voces/es_ES-sharvard-medium.onnx")
+
+# XTTS v2 (voz clonada): vive en su propio entorno, .venv-voz/, porque necesita
+# PyTorch y transformers<5 y eso no cabe en el del bot. Se llama como proceso
+# aparte; ver voz_xtts.py. Se instala con ./instalar_voz_xtts.sh.
+MOTORES_VOZ = ("piper", "xtts")
+XTTS_PYTHON = RAIZ_PROYECTO / ".venv-voz/bin/python"
+XTTS_SCRIPT = Path(__file__).resolve().parent / "voz_xtts.py"
+XTTS_REFERENCIA = RAIZ_PROYECTO / "voz_muestra/referencia.wav"
+XTTS_TIMEOUT_S = 900  # un guion de 45 s tarda ~2 min; esto es para que no se cuelgue
 SALIDA_DIR = Path("videos")
 TMP_DIR = Path("tmp_video")
 BROLL_CACHE = Path("broll_cache")
@@ -225,6 +234,64 @@ def generar_audio_piper(texto: str, modelo: str, salida_wav: Path) -> None:
     )
     if proceso.returncode != 0:
         raise RuntimeError(f"Piper falló: {proceso.stderr}")
+
+
+def xtts_disponible() -> tuple[bool, str]:
+    """
+    ¿Se puede usar XTTS? Devuelve (sí/no, motivo en castellano si no).
+
+    Hace falta que el usuario haya aceptado la licencia a propósito: los pesos
+    van con la Coqui Public Model License, que solo permite uso NO COMERCIAL,
+    y eso incluye el audio que sale del modelo. No se acepta en su nombre.
+    """
+    if os.environ.get("XTTS_LICENCIA_CPML_ACEPTADA") != "1":
+        return False, ("Falta aceptar la licencia de XTTS (solo uso no comercial): "
+                       "pon XTTS_LICENCIA_CPML_ACEPTADA=1 en files/.env")
+    if not XTTS_PYTHON.is_file():
+        return False, "No está instalado el entorno de XTTS: ejecuta ./instalar_voz_xtts.sh"
+    if not XTTS_REFERENCIA.is_file():
+        return False, "Falta tu muestra de voz en voz_muestra/referencia.wav"
+    return True, ""
+
+
+def generar_audio_xtts(texto: str, salida_wav: Path) -> None:
+    """Locuta con XTTS v2 clonando la voz de voz_muestra/referencia.wav."""
+    disponible, motivo = xtts_disponible()
+    if not disponible:
+        raise RuntimeError(motivo)
+
+    TMP_DIR.mkdir(exist_ok=True)
+    archivo_texto = TMP_DIR / f"{salida_wav.stem}_xtts.txt"
+    archivo_texto.write_text(texto, encoding="utf-8")
+    try:
+        proceso = subprocess.run(
+            [str(XTTS_PYTHON), str(XTTS_SCRIPT), str(archivo_texto),
+             str(XTTS_REFERENCIA), str(salida_wav)],
+            capture_output=True, text=True, timeout=XTTS_TIMEOUT_S,
+            # la librería pide aceptar la licencia por consola; ya está
+            # comprobado arriba que el usuario la ha aceptado
+            env={**os.environ, "COQUI_TOS_AGREED": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"XTTS tardó más de {XTTS_TIMEOUT_S // 60} minutos y se canceló")
+    finally:
+        archivo_texto.unlink(missing_ok=True)
+    if proceso.returncode != 0 or not salida_wav.is_file():
+        cola = " | ".join(proceso.stderr.strip().splitlines()[-3:])[:300]
+        raise RuntimeError(f"XTTS falló: {cola}")
+
+
+def generar_audio(guion: dict, salida_wav: Path, motor: str = "piper",
+                  modelo_piper: str = VOZ_MODELO_DEFECTO) -> None:
+    """Locuta el guion con el motor elegido ('piper' o 'xtts')."""
+    texto = construir_texto(guion)
+    if motor == "xtts":
+        # Sin pronunciaciones.json ni fonemas ingleses: son arreglos para los
+        # fallos de Piper (se come la L de "público", lee "Xbox" como "équis-
+        # boks") y a XTTS, que no los tiene, le estorbarían.
+        generar_audio_xtts(texto, salida_wav)
+    else:
+        generar_audio_piper(texto_para_tts(texto, guion), modelo_piper, salida_wav)
 
 
 def duracion_audio(ruta_wav: Path) -> float:
@@ -942,6 +1009,9 @@ def main():
     parser = argparse.ArgumentParser(description="Convierte un guion JSON en vídeo reel con Piper + FFmpeg")
     parser.add_argument("guion_json", help="Ruta al JSON de guion generado por noticias_reel.py")
     parser.add_argument("--voz", default=VOZ_MODELO_DEFECTO, help="Ruta al modelo .onnx de Piper")
+    parser.add_argument("--motor", choices=MOTORES_VOZ, default="piper",
+                        help="Motor de voz: piper (rápido, 2 s) o xtts (tu voz clonada, ~2 min; "
+                             "licencia NO comercial, ver README)")
     parser.add_argument("--broll-dir", help="Carpeta con clips propios para el fondo (en vez de Pexels)")
     parser.add_argument("--sin-broll", action="store_true",
                         help="Fuerza el fondo de gradiente procedural")
@@ -970,9 +1040,9 @@ def main():
     salida_mp4 = SALIDA_DIR / f"{base_id}.mp4"
 
     texto = construir_texto(guion)
-    texto_hablado = texto_para_tts(texto, guion)
-    print(f"[1/4] Generando audio con Piper ({len(texto)} caracteres)...")
-    generar_audio_piper(texto_hablado, args.voz, audio_wav)
+    nombre_motor = "XTTS, tu voz (~2 min)" if args.motor == "xtts" else "Piper"
+    print(f"[1/4] Generando audio con {nombre_motor} ({len(texto)} caracteres)...")
+    generar_audio(guion, audio_wav, motor=args.motor, modelo_piper=args.voz)
 
     print("[2/4] Generando subtítulos...")
     dur = duracion_audio(audio_wav)
